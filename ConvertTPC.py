@@ -7,12 +7,12 @@ from io import BytesIO
 # ------------------------
 # 設定
 # ------------------------
-las_folder = Path(
-    r"C:\Users\user\Desktop\Unity\PointCloudViewer\Assets\PointCloudViewer\Las"
-)
+las_folder = Path(r"C:\Users\user\Github\PointCloudViewer\Assets\PointCloudViewer\Las")
 out_path = Path(r"C:\Users\user\Desktop\sample.tpc")
 magic = b"TPC\x00"
-version = (1, 0, 0)
+version_major = 1
+version_minor = 0
+version_patch = 0
 grid_size = 100.0
 
 
@@ -137,9 +137,11 @@ for key, data in chunks.items():
 # TPCファイル書き出し
 # ------------------------
 with out_path.open("wb") as fp:
-    fp.write(magic)  # "TPC\0"
-    version_packed = (version[0] << 16) | (version[1] << 8) | version[2]
-    fp.write(struct.pack("<I", version_packed))
+    fp.write(magic)
+    fp.write(struct.pack("<B", version_major))
+    fp.write(struct.pack("<B", version_minor))
+    fp.write(struct.pack("<B", version_patch))
+    fp.write(struct.pack("<B", 0))  # 4Bに揃えるためパディング
     fp.write(struct.pack("<f", grid_size))
     fp.write(struct.pack("<I", len(chunk_records)))
     fp.write(struct.pack("<3f", *global_center))
