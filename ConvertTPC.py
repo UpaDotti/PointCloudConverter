@@ -14,14 +14,21 @@ version_major = 1
 version_minor = 0
 version_patch = 0
 grid_size = 100.0
+lod_steps = (1, 4, 16)
 
 
 # ------------------------
-# sRGB→リニア変換
+# 関数
 # ------------------------
-def srgb_to_linear(c):
+def gamma_to_linear(c):
+    # sRGB(ガンマ)値をリニアRGBに変換
     c = c / 255.0
     return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def downsample_indices(n, step):
+    # 0〜n-1 のインデックスを step 間隔で取得
+    return np.arange(0, n, step, dtype=np.int32)
 
 
 # ------------------------
@@ -67,9 +74,9 @@ for las_path in las_folder.glob("*.las"):
     z -= global_center[2]
 
     # 色処理
-    r_linear = srgb_to_linear((las.red / 65535.0) * 255.0)
-    g_linear = srgb_to_linear((las.green / 65535.0) * 255.0)
-    b_linear = srgb_to_linear((las.blue / 65535.0) * 255.0)
+    r_linear = gamma_to_linear((las.red / 65535.0) * 255.0)
+    g_linear = gamma_to_linear((las.green / 65535.0) * 255.0)
+    b_linear = gamma_to_linear((las.blue / 65535.0) * 255.0)
 
     r = (r_linear * 255.0).astype(np.uint8)
     g = (g_linear * 255.0).astype(np.uint8)
@@ -103,21 +110,35 @@ print(f"チャンク数: {len(chunks)}")
 print(f"全体点数: {total_point_count}")
 
 # ------------------------
-# バイナリデータ構築
+# LOD構築（3パス目）
 # ------------------------
+
 chunk_records = []
 body_buffer = BytesIO()
 offset = 0
 
+pos_struct = struct.Struct("<3f")
+col_struct = struct.Struct("<3B")
+point_bytes = pos_struct.size + col_struct.size
+
 for key, data in chunks.items():
     ix, iy, iz = key
     pts = data["points"]
-    point_count = len(pts)
+    n = len(pts)
 
-    # 点群データ書き出し（入れ替え済みなのでそのまま）
-    for pt in pts:
-        body_buffer.write(struct.pack("<3f", pt[0], pt[1], pt[2]))  # x, y, z（float）
-        body_buffer.write(struct.pack("<3B", pt[3], pt[4], pt[5]))  # r, g, b（uint8）
+    lods = []
+    for step in lod_steps:
+        idx = downsample_indices(n, step=step)
+        lod_offset = offset
+
+        for i in idx:
+            x, y, z, r, g, b = pts[i]
+            body_buffer.write(pos_struct.pack(x, y, z))
+            body_buffer.write(col_struct.pack(r, g, b))
+
+        lod_count = len(idx)
+        lods.append((lod_offset, lod_count))
+        offset += lod_count * point_bytes
 
     chunk_records.append(
         {
@@ -126,12 +147,9 @@ for key, data in chunks.items():
             "iz": iz,
             "min": data["min"],
             "max": data["max"],
-            "offset": offset,
-            "count": point_count,
+            "lods": lods,
         }
     )
-
-    offset += point_count * 15  # 15 bytes/point
 
 # ------------------------
 # TPCファイル書き出し
@@ -141,17 +159,19 @@ with out_path.open("wb") as fp:
     fp.write(struct.pack("<B", version_major))
     fp.write(struct.pack("<B", version_minor))
     fp.write(struct.pack("<B", version_patch))
-    fp.write(struct.pack("<B", 0))  # 4Bに揃えるためパディング
+    fp.write(struct.pack("<B", len(lod_steps)))
     fp.write(struct.pack("<f", grid_size))
     fp.write(struct.pack("<I", len(chunk_records)))
+
     fp.write(struct.pack("<3f", *global_center))
 
     for rec in chunk_records:
         fp.write(struct.pack("<3i", rec["ix"], rec["iy"], rec["iz"]))
         fp.write(struct.pack("<3f", *rec["min"]))
         fp.write(struct.pack("<3f", *rec["max"]))
-        fp.write(struct.pack("<Q", rec["offset"]))
-        fp.write(struct.pack("<I", rec["count"]))
+        for off, cnt in rec["lods"]:
+            fp.write(struct.pack("<Q", off))
+            fp.write(struct.pack("<I", cnt))
 
     fp.write(body_buffer.getvalue())
 
