@@ -31,6 +31,14 @@ def downsample_indices(n, step):
     return np.arange(0, n, step, dtype=np.int32)
 
 
+def quantize_u16(value, vmin, vmax):
+    # floatをushort16に量子化
+    span = vmax - vmin  # 範囲を計算
+    normalized = (value - vmin) / span  # 0～1に正規化
+    quantized = np.round(normalized * 65535.0)  # 0〜65535にスケールして四捨五入
+    return quantized.astype(np.uint16)  # ushortにキャスト
+
+
 # ------------------------
 # グローバル中心計算（1パス目）
 # ------------------------
@@ -105,7 +113,6 @@ for las_path in las_folder.glob("*.las"):
 
         total_point_count += 1
 
-
 print(f"チャンク数: {len(chunks)}")
 print(f"全体点数: {total_point_count}")
 
@@ -117,28 +124,45 @@ chunk_records = []
 body_buffer = BytesIO()
 offset = 0
 
-pos_struct = struct.Struct("<3f")
-col_struct = struct.Struct("<3B")
-point_bytes = pos_struct.size + col_struct.size
+point_struct = struct.Struct("<HHHBBBB")  # x,y,z(ushort), r,g,b,a(uint8)
 
 for key, data in chunks.items():
     ix, iy, iz = key
     pts = data["points"]
-    n = len(pts)
+    xs = np.array([p[0] for p in pts], dtype=np.float32)
+    ys = np.array([p[1] for p in pts], dtype=np.float32)
+    zs = np.array([p[2] for p in pts], dtype=np.float32)
+    rs = np.array([p[3] for p in pts], dtype=np.uint8)
+    gs = np.array([p[4] for p in pts], dtype=np.uint8)
+    bs = np.array([p[5] for p in pts], dtype=np.uint8)
+
+    mn = data["min"]
+    mx = data["max"]
 
     lods = []
     for step in lod_steps:
-        idx = downsample_indices(n, step=step)
+        idx = downsample_indices(len(pts), step=step)
         lod_offset = offset
 
-        for i in idx:
-            x, y, z, r, g, b = pts[i]
-            body_buffer.write(pos_struct.pack(x, y, z))
-            body_buffer.write(col_struct.pack(r, g, b))
+        # 量子化
+        qx = quantize_u16(xs[idx], mn[0], mx[0])
+        qy = quantize_u16(ys[idx], mn[1], mx[1])
+        qz = quantize_u16(zs[idx], mn[2], mx[2])
+        rr = rs[idx]
+        gg = gs[idx]
+        bb = bs[idx]
+        aa = np.full_like(rr, 255, dtype=np.uint8)
+
+        for x16, y16, z16, r8, g8, b8, a8 in zip(qx, qy, qz, rr, gg, bb, aa):
+            body_buffer.write(
+                point_struct.pack(
+                    int(x16), int(y16), int(z16), int(r8), int(g8), int(b8), int(a8)
+                )
+            )
 
         lod_count = len(idx)
         lods.append((lod_offset, lod_count))
-        offset += lod_count * point_bytes
+        offset += lod_count * point_struct.size
 
     chunk_records.append(
         {
@@ -154,25 +178,32 @@ for key, data in chunks.items():
 # ------------------------
 # TPCファイル書き出し
 # ------------------------
+
+# ファイル全体
 with out_path.open("wb") as fp:
-    fp.write(magic)
-    fp.write(struct.pack("<B", version_major))
-    fp.write(struct.pack("<B", version_minor))
-    fp.write(struct.pack("<B", version_patch))
-    fp.write(struct.pack("<B", len(lod_steps)))
-    fp.write(struct.pack("<f", grid_size))
-    fp.write(struct.pack("<I", len(chunk_records)))
+    fp.write(magic)  # マジックナンバー
+    fp.write(struct.pack("<B", version_major))  # バージョン（メジャー）
+    fp.write(struct.pack("<B", version_minor))  # バージョン（マイナー）
+    fp.write(struct.pack("<B", version_patch))  # バージョン（パッチ）
+    fp.write(struct.pack("<B", len(lod_steps)))  # LOD
+    fp.write(struct.pack("<f", grid_size))  # グリッドサイズ
+    fp.write(struct.pack("<I", len(chunk_records)))  # チャンクデータ
+    fp.write(struct.pack("<3f", *global_center))  # 点群の中心
 
-    fp.write(struct.pack("<3f", *global_center))
+    # チャンクデータ
+    for record in chunk_records:
+        fp.write(
+            # チャンク座標 ex :(1,1,1)
+            struct.pack("<3i", record["ix"], record["iy"], record["iz"])
+        )
+        fp.write(struct.pack("<3f", *record["min"]))  # チャンク内での最小
+        fp.write(struct.pack("<3f", *record["max"]))  # チャンク内での最大
 
-    for rec in chunk_records:
-        fp.write(struct.pack("<3i", rec["ix"], rec["iy"], rec["iz"]))
-        fp.write(struct.pack("<3f", *rec["min"]))
-        fp.write(struct.pack("<3f", *rec["max"]))
-        for off, cnt in rec["lods"]:
-            fp.write(struct.pack("<Q", off))
-            fp.write(struct.pack("<I", cnt))
+        # LOD別データ
+        for offset, count in record["lods"]:
+            fp.write(struct.pack("<Q", offset))  # オフセット…開始位置
+            fp.write(struct.pack("<I", count))  # 点の数
 
-    fp.write(body_buffer.getvalue())
+    fp.write(body_buffer.getvalue())  # 点データ
 
 print("✅ 書き出し完了: TPCファイル出力成功")
