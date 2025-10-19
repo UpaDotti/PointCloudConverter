@@ -138,40 +138,65 @@ for key, data in chunks.items():
 
     mn = data["min"]
     mx = data["max"]
-
-    lods = []
-    for step in lod_steps:
-        idx = downsample_indices(len(pts), step=step)
-        lod_offset = offset
-
-        # 量子化
-        qx = quantize_u16(xs[idx], mn[0], mx[0])
-        qy = quantize_u16(ys[idx], mn[1], mx[1])
-        qz = quantize_u16(zs[idx], mn[2], mx[2])
-        rr = rs[idx]
-        gg = gs[idx]
-        bb = bs[idx]
-        aa = np.full_like(rr, 255, dtype=np.uint8)
-
-        for x16, y16, z16, r8, g8, b8, a8 in zip(qx, qy, qz, rr, gg, bb, aa):
-            body_buffer.write(
-                point_struct.pack(
-                    int(x16), int(y16), int(z16), int(r8), int(g8), int(b8), int(a8)
-                )
-            )
-
-        lod_count = len(idx)
-        lods.append((lod_offset, lod_count))
-        offset += lod_count * point_struct.size
-
+    
+    # 点群の個数
+    n = len(pts)
+    
+    # LODごとの使用するインデックス
+    step_to_idx = {s: downsample_indices(n, step=s) for s in lod_steps}
+    
+    # 点を採用したかを管理するフラグ
+    used = np.zeros(n, dtype=bool)
+    
+    # 書き出し最終順序
+    write_order_parts = []
+    
+    # LODごとの累積点数
+    cumulative_counts = {}
+    
+    # LODごとに採用するインデックスを記録 降順LODで実行
+    for s in sorted(lod_steps, reverse=True):
+        idx = step_to_idx[s] # インデックス候補
+        new_idx = idx[~used[idx]] # 採用していないインデックスを抽出
+        write_order_parts.append(new_idx) # 書き出しに追加
+        used[new_idx] = True # 採用を記録
+        cumulative_counts[s] = used.sum() # 累積点数を記録
+        
+    # LODごとになっているインデックスをまとめる
+    write_order = np.concatenate(write_order_parts) if write_order_parts else np.arange(n)    
+    
+    # 量子化 & 実データを抽出
+    qx = quantize_u16(xs[write_order], mn[0], mx[0])
+    qy = quantize_u16(ys[write_order], mn[1], mx[1])
+    qz = quantize_u16(zs[write_order], mn[2], mx[2])
+    rr = rs[write_order]
+    gg = gs[write_order]
+    bb = bs[write_order]
+    aa = np.full_like(rr, 255, dtype=np.uint8)
+    
+    # このチャンクの点データが始まるバイト位置
+    chunk_base_offset = offset
+    
+    # 点群バッファに記録
+    for x16, y16, z16, r8, g8, b8, a8 in zip(qx, qy, qz, rr, gg, bb, aa):
+        # バイナリ変換
+        point_pack = point_struct.pack(int(x16), int(y16), int(z16), int(r8), int(g8), int(b8), int(a8))
+        
+        # 点の全体データに記録
+        body_buffer.write(point_pack)
+        
+    # チャンクごとのオフセットを進める
+    offset += len(write_order) * point_struct.size
+    
+    # chunk_base_offset：チャンク先頭 cumulative_counts：先頭から何点読むか
+    lods = [(chunk_base_offset, cumulative_counts[s]) for s in lod_steps]
+    
+    # チャンクデータを追加
     chunk_records.append(
         {
-            "ix": ix,
-            "iy": iy,
-            "iz": iz,
-            "min": data["min"],
-            "max": data["max"],
-            "lods": lods,
+            "ix": ix, "iy": iy, "iz": iz, # グリッド座標
+            "min": mn, "max": mx, # 最小・最大
+            "lods": lods, # 
         }
     )
 
