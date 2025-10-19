@@ -15,7 +15,7 @@ version_major = 1
 version_minor = 0
 version_patch = 0
 grid_size = 100.0
-lod_steps = (1, 4, 16)
+lod_steps = (1, 4, 16, 64, 256)
 
 # ------------------------
 # グローバル中心計算（1パス目）
