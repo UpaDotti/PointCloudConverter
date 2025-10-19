@@ -3,6 +3,7 @@ import numpy as np
 from pathlib import Path
 import struct
 from io import BytesIO
+import utils
 
 # ------------------------
 # 設定
@@ -15,29 +16,6 @@ version_minor = 0
 version_patch = 0
 grid_size = 100.0
 lod_steps = (1, 4, 16)
-
-
-# ------------------------
-# 関数
-# ------------------------
-def gamma_to_linear(c):
-    # sRGB(ガンマ)値をリニアRGBに変換
-    c = c / 255.0
-    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
-
-
-def downsample_indices(n, step):
-    # 0〜n-1 のインデックスを step 間隔で取得
-    return np.arange(0, n, step, dtype=np.int32)
-
-
-def quantize_u16(value, vmin, vmax):
-    # floatをushort16に量子化
-    span = vmax - vmin  # 範囲を計算
-    normalized = (value - vmin) / span  # 0～1に正規化
-    quantized = np.round(normalized * 65535.0)  # 0〜65535にスケールして四捨五入
-    return quantized.astype(np.uint16)  # ushortにキャスト
-
 
 # ------------------------
 # グローバル中心計算（1パス目）
@@ -82,9 +60,9 @@ for las_path in las_folder.glob("*.las"):
     z -= global_center[2]
 
     # 色処理
-    r_linear = gamma_to_linear((las.red / 65535.0) * 255.0)
-    g_linear = gamma_to_linear((las.green / 65535.0) * 255.0)
-    b_linear = gamma_to_linear((las.blue / 65535.0) * 255.0)
+    r_linear = utils.gamma_to_linear((las.red / 65535.0) * 255.0)
+    g_linear = utils.gamma_to_linear((las.green / 65535.0) * 255.0)
+    b_linear = utils.gamma_to_linear((las.blue / 65535.0) * 255.0)
 
     r = (r_linear * 255.0).astype(np.uint8)
     g = (g_linear * 255.0).astype(np.uint8)
@@ -143,7 +121,7 @@ for key, data in chunks.items():
     n = len(pts)
 
     # LODごとの使用するインデックス
-    step_to_idx = {s: downsample_indices(n, step=s) for s in lod_steps}
+    step_to_idx = {s: utils.downsample_indices(n, step=s) for s in lod_steps}
 
     # 点を採用したかを管理するフラグ
     used = np.zeros(n, dtype=bool)
@@ -168,9 +146,9 @@ for key, data in chunks.items():
     )
 
     # 量子化 & 実データを抽出
-    qx = quantize_u16(xs[write_order], mn[0], mx[0])
-    qy = quantize_u16(ys[write_order], mn[1], mx[1])
-    qz = quantize_u16(zs[write_order], mn[2], mx[2])
+    qx = utils.quantize_u16(xs[write_order], mn[0], mx[0])
+    qy = utils.quantize_u16(ys[write_order], mn[1], mx[1])
+    qz = utils.quantize_u16(zs[write_order], mn[2], mx[2])
     rr = rs[write_order]
     gg = gs[write_order]
     bb = bs[write_order]
