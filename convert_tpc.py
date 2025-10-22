@@ -20,23 +20,28 @@ lod_steps = (1, 4, 16, 64, 256)
 # ------------------------
 # グローバル中心計算（1パス目）
 # ------------------------
-all_xyz = []
+chunk_size = 1_000_000
+count = 0
+sum_x = 0.0
+sum_y = 0.0
+sum_z = 0.0
 
 for las_path in las_folder.glob("*.las"):
-    las = laspy.read(las_path)
-    scale = np.array(las.header.scales, dtype=np.float32)
-    offset = np.array(las.header.offsets, dtype=np.float32)
+    with laspy.open(las_path) as reader:
+        scale = np.array(reader.header.scales, dtype=np.float64)
+        offset = np.array(reader.header.offsets, dtype=np.float64)
 
-    x = las.points["X"] * scale[0] + offset[0]
-    y = las.points["Y"] * scale[1] + offset[1]
-    z = las.points["Z"] * scale[2] + offset[2]
-    y, z = z, y  # yとzを入替
+        for points in reader.chunk_iterator(chunk_size):
+            n = points["X"].size
 
-    all_xyz.append(np.stack([x, y, z], axis=1))
+            sum_x += scale[0] * points["X"].sum(dtype=np.int64) + n * offset[0]
+            sum_y += scale[2] * points["Z"].sum(dtype=np.int64) + n * offset[2]  # Z→Y
+            sum_z += scale[1] * points["Y"].sum(dtype=np.int64) + n * offset[1]  # Y→Z
+            count += n
 
-global_xyz = np.concatenate(all_xyz, axis=0)
-global_center = global_xyz.mean(axis=0).astype(np.float32)
-print(f"全体中心: {global_center}")
+global_center = np.array([sum_x, sum_y, sum_z], dtype=np.float64) / count
+global_center = global_center.astype(np.float32)
+print("全体中心:", global_center)
 
 # ------------------------
 # チャンク分割（2パス目）
