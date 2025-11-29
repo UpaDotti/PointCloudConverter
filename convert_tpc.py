@@ -4,6 +4,7 @@ import struct
 import sys
 from io import BytesIO
 from pathlib import Path
+import shutil
 
 # サードパーティー
 import laspy
@@ -251,6 +252,7 @@ def chunk_point_cloud():
 
 chunk_point_cloud()
 
+
 # ------------------------
 # LOD構築（4パス目）
 # ------------------------
@@ -340,6 +342,7 @@ def build_lods() -> tuple[list[dict], bytes]:
 
 chunk_records, body_bytes = build_lods()
 
+
 # ------------------------
 # TPCファイル書き出し
 # ------------------------
@@ -372,3 +375,27 @@ with TPC_PATH.open("wb") as fp:
     fp.write(body_bytes)  # 点データ
 
 print("TPCファイル出力")
+
+
+# ------------------------
+# TPCファイル書き出し
+# ------------------------
+
+
+def cleanup_intermediate_files() -> None:
+
+    # points.bin
+    if POINTS_CACHE_PATH.exists():
+        POINTS_CACHE_PATH.unlink()
+
+    # manifest
+    if MANIFEST_PATH.exists():
+        MANIFEST_PATH.unlink()
+
+    # chunks フォルダ（中身ごと）
+    if CHUNK_DIR.exists() and CHUNK_DIR.is_dir():
+        shutil.rmtree(CHUNK_DIR)
+
+
+cleanup_intermediate_files()
+print("中間ファイル削除")
