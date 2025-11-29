@@ -54,7 +54,7 @@ POINT_DTYPE = np.dtype(
 
 
 # ------------------------
-# グローバル中心計算（1パス目）
+# グローバル中心計算
 # ------------------------
 def compute_global_center():
 
@@ -65,7 +65,7 @@ def compute_global_center():
     sum_y = 0.0
     sum_z = 0.0
 
-    for las_path in tqdm(las_paths, desc="1/4 グローバル中心", unit="file"):
+    for las_path in tqdm(las_paths, desc="グローバル中心", unit="file"):
         with laspy.open(las_path) as reader:
             scale = np.array(reader.header.scales, dtype=np.float64)
             offset = np.array(reader.header.offsets, dtype=np.float64)
@@ -91,7 +91,7 @@ global_center = compute_global_center()
 
 
 # ------------------------
-# 点データを一時キャッシュとして書き出し（2パス目）
+# 点データを一時キャッシュとして書き出し
 # ------------------------
 def export_las_points(global_center):
 
@@ -99,7 +99,7 @@ def export_las_points(global_center):
 
     total = 0
     with POINTS_CACHE_PATH.open("wb") as fp:
-        for las_path in tqdm(las_paths, desc="2/4 点群キャッシュ", unit="file"):
+        for las_path in tqdm(las_paths, desc="点群キャッシュ", unit="file"):
             with laspy.open(las_path) as reader:
                 scale = np.array(reader.header.scales, dtype=np.float32)
                 offset = np.array(reader.header.offsets, dtype=np.float32)
@@ -144,7 +144,7 @@ export_las_points(global_center)
 
 
 # ------------------------
-# チャンク分割（3パス目）
+# チャンク分割
 # ------------------------
 def chunk_point_cloud():
 
@@ -159,7 +159,7 @@ def chunk_point_cloud():
     processed = 0
 
     with POINTS_CACHE_PATH.open("rb") as fp, tqdm(
-        total=total, desc="3/4 チャンク分割", unit="pts"
+        total=total, desc="チャンク分割", unit="pts"
     ) as pbar:
         while processed < total:
             # 一気に読み込むサイズを制限
@@ -168,15 +168,12 @@ def chunk_point_cloud():
             # 点データを取得
             recs = np.fromfile(fp, dtype=POINT_DTYPE, count=n)
 
-            # ここでもう print は不要
-            # print(processed / total)
-
             if recs.size == 0:
                 break
 
             # 処理済みの点をカウント
             processed += recs.size
-            pbar.update(recs.size)  # ← ここで進捗を増やす
+            pbar.update(recs.size)
 
             # XYZそれぞれで取得
             x = recs["x"]
@@ -254,11 +251,11 @@ chunk_point_cloud()
 
 
 # ------------------------
-# LOD構築（4パス目）
+# LODごとのオフセットを計算
 # ------------------------
 
 
-def build_lods() -> tuple[list[dict], bytes]:
+def build_lods_meta_only() -> list[dict]:
     with MANIFEST_PATH.open("r", encoding="utf-8") as f:
         manifest = json.load(f)
 
@@ -268,114 +265,161 @@ def build_lods() -> tuple[list[dict], bytes]:
     )
 
     chunk_records: list[dict] = []
-    body_buffer = BytesIO()
-    offset = 0
 
+    offset = 0
     point_struct = struct.Struct("<HHHBBBB")  # x,y,z(ushort), r,g,b,a(uint8)
 
-    for meta in tqdm(sorted_chunks, desc="4/4 LOD構築", unit="chunk"):
-        ix = int(meta["ix"])
-        iy = int(meta["iy"])
-        iz = int(meta["iz"])
-        vmin = np.array(meta["min"], dtype=np.float32)
-        vmax = np.array(meta["max"], dtype=np.float32)
+    for meta in tqdm(sorted_chunks, desc="LODメタ計算", unit="chunk"):
         chunk_path = CHUNK_DIR / meta["file"]
 
         mm = np.memmap(chunk_path, mode="r", dtype=POINT_DTYPE)
         n = mm.shape[0]
 
         used = np.zeros(n, bool)
-        write_parts = []
         cum: dict[int, int] = {}
 
         for s in sorted(LOD_STEPS, reverse=True):
             idx = utils.downsample_indices(n, step=int(s))
             new = idx[~used[idx]]
-            write_parts.append(new)
             used[new] = True
             cum[int(s)] = int(used.sum())
 
-        order = np.concatenate(write_parts)
+        # このチャンクで実際に書き出される総ポイント数（=最も細かいLODの点数）
+        total_points = cum[int(LOD_STEPS[0])]
 
-        qx = utils.quantize_u16(mm["x"][order], vmin[0], vmax[0])
-        qy = utils.quantize_u16(mm["y"][order], vmin[1], vmax[1])
-        qz = utils.quantize_u16(mm["z"][order], vmin[2], vmax[2])
-
-        r = utils.convert_color(mm["r"][order])
-        g = utils.convert_color(mm["g"][order])
-        b = utils.convert_color(mm["b"][order])
-        a = np.full_like(r, 255, dtype=np.uint8)
-
+        # このチャンク内でのボディ先頭からのオフセット
         chunk_base_offset = offset
 
-        for x16, y16, z16, r8, g8, b8, a8 in zip(qx, qy, qz, r, g, b, a):
-            point_pack = point_struct.pack(
-                int(x16),
-                int(y16),
-                int(z16),
-                int(r8),
-                int(g8),
-                int(b8),
-                int(a8),
-            )
-            body_buffer.write(point_pack)
+        # 各LODの (offset, count) を記録
+        lods = [(chunk_base_offset, cum[int(s)]) for s in LOD_STEPS]
 
-        offset += len(order) * point_struct.size
-
-        lods = [(chunk_base_offset, cum[s]) for s in LOD_STEPS]
+        # 次のチャンク用にオフセットを進める
+        offset += total_points * point_struct.size
 
         chunk_records.append(
             {
-                "ix": ix,
-                "iy": iy,
-                "iz": iz,
-                "min": vmin.tolist(),
-                "max": vmax.tolist(),
+                "ix": int(meta["ix"]),
+                "iy": int(meta["iy"]),
+                "iz": int(meta["iz"]),
+                "min": meta["min"],
+                "max": meta["max"],
                 "lods": lods,
+                "file": meta["file"],
             }
         )
 
         del mm
 
-    return chunk_records, body_buffer.getvalue()
+    return chunk_records
 
 
-chunk_records, body_bytes = build_lods()
+chunk_records = build_lods_meta_only()
 
 
 # ------------------------
-# TPCファイル書き出し
+# TCPのヘッダーを書き込み
 # ------------------------
 
-# ファイル全体
-with TPC_PATH.open("wb") as fp:
-    fp.write(MAGIC)  # マジックナンバー
-    fp.write(struct.pack("<B", VERSION_MAJOR))  # バージョン（メジャー）
-    fp.write(struct.pack("<B", VERSION_MINOR))  # バージョン（マイナー）
-    fp.write(struct.pack("<B", VERSION_PATCH))  # バージョン（パッチ）
-    fp.write(struct.pack("<B", len(LOD_STEPS)))  # LOD
-    fp.write(struct.pack("<f", GRID_SIZE))  # グリッドサイズ
-    fp.write(struct.pack("<I", len(chunk_records)))  # チャンクデータ
-    fp.write(struct.pack("<3f", *global_center))  # 点群の中心
 
-    # チャンクデータ
-    for record in chunk_records:
-        fp.write(
-            # チャンク座標 ex :(1,1,1)
-            struct.pack("<3i", record["ix"], record["iy"], record["iz"])
-        )
-        fp.write(struct.pack("<3f", *record["min"]))  # チャンク内での最小
-        fp.write(struct.pack("<3f", *record["max"]))  # チャンク内での最大
+def write_tpc_header(chunk_records: list[dict]) -> None:
+    with TPC_PATH.open("wb") as fp:
+        # マジック＋バージョン
+        fp.write(MAGIC)  # b"TPC\x00"
+        fp.write(struct.pack("<B", VERSION_MAJOR))
+        fp.write(struct.pack("<B", VERSION_MINOR))
+        fp.write(struct.pack("<B", VERSION_PATCH))
 
-        # LOD別データ
-        for offset, count in record["lods"]:
-            fp.write(struct.pack("<Q", offset))  # オフセット…開始位置
-            fp.write(struct.pack("<I", count))  # 点の数
+        # LOD段階数
+        fp.write(struct.pack("<B", len(LOD_STEPS)))
+        # グリッドサイズ
+        fp.write(struct.pack("<f", GRID_SIZE))
+        # チャンク数
+        fp.write(struct.pack("<I", len(chunk_records)))
+        # 点群のグローバル中心
+        fp.write(struct.pack("<3f", *global_center))
 
-    fp.write(body_bytes)  # 点データ
+        # チャンクごとのメタ情報＋LOD情報
+        for record in chunk_records:
+            ix = record["ix"]
+            iy = record["iy"]
+            iz = record["iz"]
+            vmin = record["min"]
+            vmax = record["max"]
+            lods = record["lods"]
 
-print("TPCファイル出力")
+            # チャンク座標
+            fp.write(struct.pack("<3i", ix, iy, iz))
 
+            # チャンク内のAABB
+            fp.write(struct.pack("<3f", *vmin))
+            fp.write(struct.pack("<3f", *vmax))
+
+            # 各LODの (offset, count)
+            for offset, count in lods:
+                fp.write(struct.pack("<Q", int(offset)))  # オフセット（ボディ先頭から）
+                fp.write(struct.pack("<I", int(count)))  # 点数
+
+
+write_tpc_header(chunk_records)
+print("ヘッダー書き込み")
+
+
+# ------------------------
+# 点群の本体データを書き込み
+# ------------------------
+
+
+def write_lods_binary(chunk_records: list[dict]) -> None:
+    point_struct = struct.Struct("<HHHBBBB")
+
+    with TPC_PATH.open("ab") as fp:
+        for record in tqdm(chunk_records, desc="点群バイナリ書き込み", unit="chunk"):
+            chunk_path = CHUNK_DIR / record["file"]
+
+            mm = np.memmap(chunk_path, mode="r", dtype=POINT_DTYPE)
+            n = mm.shape[0]
+
+            used = np.zeros(n, bool)
+            write_parts = []
+
+            for s in sorted(LOD_STEPS, reverse=True):
+                idx = utils.downsample_indices(n, step=int(s))
+                new = idx[~used[idx]]
+                used[new] = True
+                write_parts.append(new)
+
+            order = np.concatenate(write_parts)
+
+            vmin = np.array(record["min"], dtype=np.float32)
+            vmax = np.array(record["max"], dtype=np.float32)
+
+            qx = utils.quantize_u16(mm["x"][order], vmin[0], vmax[0])
+            qy = utils.quantize_u16(mm["y"][order], vmin[1], vmax[1])
+            qz = utils.quantize_u16(mm["z"][order], vmin[2], vmax[2])
+
+            r = utils.convert_color(mm["r"][order])
+            g = utils.convert_color(mm["g"][order])
+            b = utils.convert_color(mm["b"][order])
+            a = np.full_like(r, 255, dtype=np.uint8)
+
+            for x16, y16, z16, r8, g8, b8, a8 in zip(qx, qy, qz, r, g, b, a):
+                fp.write(
+                    point_struct.pack(
+                        int(x16),
+                        int(y16),
+                        int(z16),
+                        int(r8),
+                        int(g8),
+                        int(b8),
+                        int(a8),
+                    )
+                )
+
+            del mm
+
+
+write_lods_binary(chunk_records)
+print("点群バイナリ出力")
 
 # ------------------------
 # TPCファイル書き出し
