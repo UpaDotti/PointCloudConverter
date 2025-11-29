@@ -23,8 +23,23 @@ def downsample_indices(n, step):
 
 
 def quantize_u16(value, vmin, vmax):
-    # floatをushort16に量子化
-    span = vmax - vmin  # 範囲を計算
-    normalized = (value - vmin) / span  # 0～1に正規化
-    quantized = np.round(normalized * 65535.0)  # 0〜65535にスケールして四捨五入
-    return quantized.astype(np.uint16)  # ushortにキャスト
+    """floatをushort16に量子化"""
+
+    # 範囲を取得
+    span = float(vmax - vmin)
+
+    # 範囲が0のときは0を返す
+    if span <= 0.0:
+        return np.zeros_like(value, dtype=np.uint16)
+
+    # 0〜1 に正規化
+    normalized = (value - vmin) / span
+
+    # 0〜1 にクリップ
+    normalized = np.clip(normalized, 0.0, 1.0)
+
+    # 0〜65535 にスケールして四捨五入
+    quantized = np.round(normalized * 65535.0)
+
+    # uint16 にキャスト
+    return quantized.astype(np.uint16)
