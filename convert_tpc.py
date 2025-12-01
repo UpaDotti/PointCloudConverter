@@ -37,7 +37,11 @@ VERSION_MAJOR = 1
 VERSION_MINOR = 0
 VERSION_PATCH = 0
 GRID_SIZE = 100.0
-LOD_STEPS = (1, 4, 16, 64, 256, 1024)
+
+LOD_LEVELS = 7
+LOD_FIRST_STEP = 1
+LOD_STEP_FACTOR = 4
+LOD_STEPS = ()
 
 READ_SIZE = 10000
 PATTERN = "*.las"
@@ -51,6 +55,12 @@ POINT_DTYPE = np.dtype(
         ("b", "<u2"),
     ]
 )
+
+
+# ------------------------
+# LODステップを生成
+# ------------------------
+LOD_STEPS = utils.make_lod_steps(LOD_LEVELS, LOD_FIRST_STEP, LOD_STEP_FACTOR)
 
 
 # ------------------------

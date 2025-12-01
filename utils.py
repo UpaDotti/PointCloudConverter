@@ -1,4 +1,5 @@
 import numpy as np
+from collections.abc import Sequence
 
 
 def convert_color(channel_16: np.ndarray) -> np.ndarray:
@@ -43,3 +44,17 @@ def quantize_u16(value, vmin, vmax):
 
     # uint16 にキャスト
     return quantized.astype(np.uint16)
+
+
+def make_lod_steps(
+    levels: int,
+    first_step: int = 1,
+    step_factor: int = 4,
+) -> tuple[int, ...]:
+    """LODを生成"""
+    steps: list[int] = []
+    s = first_step
+    for _ in range(levels):
+        steps.append(s)
+        s *= step_factor
+    return tuple(steps)
