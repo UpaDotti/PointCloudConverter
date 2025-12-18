@@ -1,5 +1,4 @@
 import numpy as np
-from collections.abc import Sequence
 
 
 def convert_color(channel_16: np.ndarray) -> np.ndarray:
