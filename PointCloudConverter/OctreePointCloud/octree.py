@@ -76,24 +76,35 @@ def split_node_file(
         child_bin.unlink(missing_ok=True)
         child_bins[cid] = child_bin
 
-    for start in range(0, n, read_size):
-        part = mm[start : start + read_size]
-        xs, ys, zs = part["x"], part["y"], part["z"]
+    fps: dict[int, object] = {}
+    for cid in range(8):
+        fps[cid] = child_bins[cid].open("ab", buffering=1024 * 1024)
 
-        cidx = (
-            ((xs >= cx).astype(np.uint8) << 2)
-            | ((ys >= cy).astype(np.uint8) << 1)
-            | ((zs >= cz).astype(np.uint8) << 0)
-        )
+    try:
+        for start in range(0, n, read_size):
+            part = mm[start : start + read_size]
+            xs, ys, zs = part["x"], part["y"], part["z"]
 
-        for cid in range(8):
-            sel = cidx == cid
-            if np.any(sel):
-                recs = part[sel].copy()
-                append_points(child_bins[cid], recs)
-                child_counts[cid] += recs.size
+            cidx = (
+                ((xs >= cx).astype(np.uint8) << 2)
+                | ((ys >= cy).astype(np.uint8) << 1)
+                | ((zs >= cz).astype(np.uint8) << 0)
+            )
 
-        del part
+            for cid in range(8):
+                sel = cidx == cid
+                if np.any(sel):
+                    recs = part[sel].copy()
+
+                    recs.tofile(fps[cid])
+
+                    child_counts[cid] += recs.size
+
+            del part
+
+    finally:
+        for fp in fps.values():
+            fp.close()
 
     mm._mmap.close()
     del mm
