@@ -32,7 +32,7 @@ class Options:
     read_size: int = 10_000
     pattern: str = "*.las"
 
-    point_dtype = np.dtype(
+    in_dtype = np.dtype(
         [
             ("x", "<f4"),
             ("y", "<f4"),
@@ -40,7 +40,21 @@ class Options:
             ("r", "<u2"),
             ("g", "<u2"),
             ("b", "<u2"),
-        ]
+        ],
+        align=False,
+    )
+
+    out_dtype = np.dtype(
+        [
+            ("x", "<u2"),
+            ("y", "<u2"),
+            ("z", "<u2"),
+            ("r", "u1"),
+            ("g", "u1"),
+            ("b", "u1"),
+            ("a", "u1"),
+        ],
+        align=False,
     )
 
 

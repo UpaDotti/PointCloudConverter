@@ -13,7 +13,8 @@ def write_opc(config: Config) -> None:
     version_minor = config.options.version_minor
     version_patch = config.options.version_patch
     lod_steps = config.options.lod_steps
-    point_dtype = config.options.point_dtype
+    in_dtype = config.options.in_dtype
+    out_dtype = config.options.out_dtype
     oct_manifest_path = config.paths.oct_manifest_path
     leaf_lods_path = config.paths.leaf_lods_path
     nodes_dir = config.paths.nodes_dir
@@ -28,7 +29,6 @@ def write_opc(config: Config) -> None:
     root_max = np.asarray(oct_manifest["root_max"], np.float32)
 
     leaf_records = lod_data["leaf_records"]
-    point_struct = struct.Struct("<HHHBBBB")
 
     # --- ヘッダー ---
     with opc_path.open("wb") as fp:
@@ -54,15 +54,16 @@ def write_opc(config: Config) -> None:
                 fp.write(struct.pack("<I", int(cnt)))
 
     # --- ボディ ---
+    lod_steps_desc = sorted(lod_steps, reverse=True)
     with opc_path.open("ab") as fp:
         for r in tqdm(leaf_records, desc="OPCボディ出力", unit="leaf"):
             leaf_bin = nodes_dir / r["file"]
-            mm = np.memmap(leaf_bin, mode="r", dtype=point_dtype)
+            mm = np.memmap(leaf_bin, mode="r", dtype=in_dtype)
             n = int(mm.shape[0])
 
             used = np.zeros(n, bool)
             write_parts = []
-            for s in sorted(lod_steps, reverse=True):
+            for s in lod_steps_desc:
                 idx = utils.downsample_indices(n, step=int(s))
                 new = idx[~used[idx]]
                 used[new] = True
@@ -81,14 +82,17 @@ def write_opc(config: Config) -> None:
             rr = utils.convert_color(mm["r"][order])
             gg = utils.convert_color(mm["g"][order])
             bb = utils.convert_color(mm["b"][order])
-            aa = np.full_like(rr, 255, dtype=np.uint8)
 
-            for x16, y16, z16, r8, g8, b8, a8 in zip(qx, qy, qz, rr, gg, bb, aa):
-                fp.write(
-                    point_struct.pack(
-                        int(x16), int(y16), int(z16), int(r8), int(g8), int(b8), int(a8)
-                    )
-                )
+            out = np.empty(order.size, dtype=out_dtype)
+            out["x"] = qx.astype(np.uint16, copy=False)
+            out["y"] = qy.astype(np.uint16, copy=False)
+            out["z"] = qz.astype(np.uint16, copy=False)
+            out["r"] = rr.astype(np.uint8, copy=False)
+            out["g"] = gg.astype(np.uint8, copy=False)
+            out["b"] = bb.astype(np.uint8, copy=False)
+            out["a"] = 255
+
+            out.tofile(fp)
 
             mm._mmap.close()
             del mm

@@ -7,11 +7,11 @@ from .config import Config
 
 def compute_points_aabb(config: Config) -> tuple[np.ndarray, np.ndarray, int]:
     read_size = config.options.read_size
-    point_dtype = config.options.point_dtype
+    in_dtype = config.options.in_dtype
     points_path = config.paths.points_path
 
     size = points_path.stat().st_size
-    total = size // point_dtype.itemsize
+    total = size // in_dtype.itemsize
 
     vmin = np.array([np.inf, np.inf, np.inf], np.float32)
     vmax = np.array([-np.inf, -np.inf, -np.inf], np.float32)
@@ -22,7 +22,7 @@ def compute_points_aabb(config: Config) -> tuple[np.ndarray, np.ndarray, int]:
         processed = 0
         while processed < total:
             n = min(read_size, total - processed)
-            recs = np.fromfile(fp, dtype=point_dtype, count=n)
+            recs = np.fromfile(fp, dtype=in_dtype, count=n)
             if recs.size == 0:
                 break
 

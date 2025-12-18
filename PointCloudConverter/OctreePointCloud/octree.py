@@ -49,7 +49,7 @@ def split_node_file(
     vmax,
 ) -> dict[int, tuple[Path, np.ndarray, np.ndarray, int]]:
     read_size = config.options.read_size
-    point_dtype = config.options.point_dtype
+    in_dtype = config.options.in_dtype
     nodes_dir = config.paths.nodes_dir
 
     vmin = np.asarray(vmin, np.float32)
@@ -57,7 +57,7 @@ def split_node_file(
     center = (vmin + vmax) * 0.5
     cx, cy, cz = center.tolist()
 
-    mm = np.memmap(node_bin, mode="r", dtype=point_dtype)
+    mm = np.memmap(node_bin, mode="r", dtype=in_dtype)
     n = int(mm.shape[0])
     if n == 0:
         mm._mmap.close()
@@ -113,7 +113,7 @@ def split_node_file(
 
 def build_octree(config: Config) -> None:
     read_size = config.options.read_size
-    point_dtype = config.options.point_dtype
+    in_dtype = config.options.in_dtype
     max_depth = config.options.max_depth
     max_points_per_leaf = config.options.max_points_per_leaf
     nodes_dir = config.paths.nodes_dir
@@ -134,7 +134,7 @@ def build_octree(config: Config) -> None:
         processed = 0
         while processed < total:
             n = min(read_size, total - processed)
-            recs = np.fromfile(fp, dtype=point_dtype, count=n)
+            recs = np.fromfile(fp, dtype=in_dtype, count=n)
             if recs.size == 0:
                 break
             append_points(root_bin, recs)

@@ -49,7 +49,7 @@ def compute_global_center(config: Config) -> np.ndarray:
 def export_las_to_points_bin(config: Config, global_center: np.ndarray) -> None:
     read_size = config.options.read_size
     pattern = config.options.pattern
-    point_dtype = config.options.point_dtype
+    in_dtype = config.options.in_dtype
     las_dir = config.paths.las_dir
     points_path = config.paths.points_path
 
@@ -91,7 +91,7 @@ def export_las_to_points_bin(config: Config, global_center: np.ndarray) -> None:
                     g = pts["green"].astype(np.uint16, copy=False)
                     b = pts["blue"].astype(np.uint16, copy=False)
 
-                    recs = np.empty(n, dtype=point_dtype)
+                    recs = np.empty(n, dtype=in_dtype)
                     recs["x"] = x
                     recs["y"] = y
                     recs["z"] = z

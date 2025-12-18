@@ -9,7 +9,7 @@ from .octree import dict_to_key
 
 
 def build_leaf_lods(config: Config) -> None:
-    point_dtype = config.options.point_dtype
+    in_dtype = config.options.in_dtype
     lod_steps = config.options.lod_steps
     nodes_dir = config.paths.nodes_dir
     leaf_lods_path = config.paths.leaf_lods_path
@@ -31,7 +31,7 @@ def build_leaf_lods(config: Config) -> None:
         key = dict_to_key(leaf["key"])
         leaf_bin = nodes_dir / leaf["file"]
 
-        mm = np.memmap(leaf_bin, mode="r", dtype=point_dtype)
+        mm = np.memmap(leaf_bin, mode="r", dtype=in_dtype)
         n = int(mm.shape[0])
 
         used = np.zeros(n, bool)
