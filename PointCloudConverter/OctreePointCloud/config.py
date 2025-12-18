@@ -29,7 +29,7 @@ class Options:
         )
         object.__setattr__(self, "lod_steps", tuple(map(int, steps)))
 
-    read_size: int = 10_000
+    read_size: int = 2_000_000
     pattern: str = "*.las"
 
     in_dtype = np.dtype(
