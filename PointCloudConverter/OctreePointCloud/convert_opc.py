@@ -9,6 +9,17 @@ from .cleanup import cleanup_intermediate_files
 
 
 def main() -> None:
+    """
+    .las（フォルダ）から.opcを出力
+
+    フロー：
+    1. センター計算
+    2. 点群のキャッシュファイル作成
+    3. オクトツリー構築
+    4. LOD構築
+    5. OPC書き出し
+    6. キャッシュファイル削除
+    """
     LAS_DIR = Path(
         r"C:\Users\user\Github\PointCloudViewer\Assets\PointCloudViewer\Las"
     )
