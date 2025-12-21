@@ -77,7 +77,7 @@ class Paths:
     def opc_path(self) -> Path:
         return self.out_dir / "sample.opc"
 
-    # 中間点群キャッシュ
+    # 中間点群のキャッシュ
     @property
     def points_path(self) -> Path:
         return self.out_dir / "points.bin"
@@ -86,6 +86,11 @@ class Paths:
     @property
     def nodes_dir(self) -> Path:
         return self.out_dir / "nodes"
+
+    # ルートノードのキャッシュ
+    @property
+    def root_path(self) -> Path:
+        return self.nodes_dir / "root.bin"
 
     # オクトツリーのメタファイル
     @property

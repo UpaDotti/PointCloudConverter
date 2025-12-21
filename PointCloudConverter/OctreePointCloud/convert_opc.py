@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from .config import Paths, Options, Config
-from .points_writer import build_points_bin
+from .points_writer import write_points_bin
 from .octree import build_octree
 from .lod import build_leaf_lods
 from .opc_writer import write_opc
@@ -28,7 +28,7 @@ def main() -> None:
     options = Options()
     config = Config(paths=paths, options=options)
 
-    build_points_bin(config)
+    write_points_bin(config)
     build_octree(config)
     build_leaf_lods(config)
     write_opc(config)
