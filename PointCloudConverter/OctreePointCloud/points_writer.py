@@ -5,7 +5,7 @@ from tqdm import tqdm
 from .config import Config
 
 
-def build_points_bin(config: Config) -> None:
+def write_points_bin(config: Config) -> None:
     """点群キャッシュファイルを作成"""
     center = compute_points_center(config)
     export_points_bin(config, center)
@@ -26,40 +26,33 @@ def compute_points_center(config: Config) -> np.ndarray:
         raise FileNotFoundError("LASファイルが見つかりません")
 
     # 最小値/ 最大値 （最初は ∞ / -∞）
-    min_v = np.array([np.inf, np.inf, np.inf], dtype=np.float64)
-    max_v = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float64)
+    min_v = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
+    max_v = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float32)
 
     # .lasを開いていく / プログレスバー
     for las_path in tqdm(las_paths, desc="点群の中心を計算", unit="file"):
         with laspy.open(las_path) as reader:
 
             # スケール / オフセットを取得
-            scale = np.array(reader.header.scales, dtype=np.float64)
-            offset = np.array(reader.header.offsets, dtype=np.float64)
+            scale = np.array(reader.header.scales, dtype=np.float32)
+            offset = np.array(reader.header.offsets, dtype=np.float32)
 
             # 指定の点数ごとに読む
             for pts in reader.chunk_iterator(read_size):
-                if pts["X"].size == 0:
-                    continue
 
                 # 実座標にしてUnity座標系にする
                 x, y, z = _to_unity_xyz(pts, scale, offset)
 
-                # 最小値を更新
-                min_v[0] = min(min_v[0], float(np.min(x)))
-                min_v[1] = min(min_v[1], float(np.min(y)))
-                min_v[2] = min(min_v[2], float(np.min(z)))
+                # 最小値 / 最大値 を取得
+                mins = np.array([x.min(), y.min(), z.min()], dtype=np.float32)
+                maxs = np.array([x.max(), y.max(), z.max()], dtype=np.float32)
 
-                # 最大値を更新
-                max_v[0] = max(max_v[0], float(np.max(x)))
-                max_v[1] = max(max_v[1], float(np.max(y)))
-                max_v[2] = max(max_v[2], float(np.max(z)))
+                # 最小値 / 最大値 を更新
+                min_v = np.minimum(min_v, mins)
+                max_v = np.maximum(max_v, maxs)
 
     # 中心を計算
     center = (min_v + max_v) * 0.5
-
-    # float32にキャスト
-    center = center.astype(np.float32)
 
     return center
 
@@ -90,7 +83,7 @@ def export_points_bin(config: Config, center: np.ndarray) -> None:
     with points_path.open("wb") as fp:
 
         # .lasを開いていく / プログレスバー
-        for las_path in tqdm(las_paths, desc="キャッシュファイルを作成", unit="file"):
+        for las_path in tqdm(las_paths, desc="キャッシュを作成", unit="file"):
             with laspy.open(las_path) as reader:
 
                 # スケール / オフセットを取得
@@ -99,9 +92,6 @@ def export_points_bin(config: Config, center: np.ndarray) -> None:
 
                 # 指定の点数ごとに読む
                 for pts in reader.chunk_iterator(read_size):
-                    n = pts["X"].size
-                    if n == 0:
-                        continue
 
                     # 実座標にしてUnity座標系にする
                     x, y, z = _to_unity_xyz(pts, scale, offset)
@@ -117,6 +107,7 @@ def export_points_bin(config: Config, center: np.ndarray) -> None:
                     b = pts["blue"].astype(np.uint16, copy=False)
 
                     # 指定dtypeの配列を作成
+                    n = len(pts)
                     recs = np.empty(n, dtype=in_dtype)
 
                     # 配列に点データを詰める
@@ -142,4 +133,5 @@ def _to_unity_xyz(pts, scale: np.ndarray, offset: np.ndarray):
     # Y/Z 入れ替え（Unity座標系）
     y = z_real
     z = y_real
+
     return x, y, z
