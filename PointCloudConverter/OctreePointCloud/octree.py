@@ -7,10 +7,27 @@ from tqdm import tqdm
 from .config import Config
 
 
+# ------------------------
+# データクラス
+# ------------------------
+@dataclass(frozen=True)
+class NodeWork:
+    bin_path: Path
+    vmin: np.ndarray
+    vmax: np.ndarray
+    count: int
+
+
 @dataclass(frozen=True)
 class NodeKey:
     depth: int
     path: int
+
+
+def make_child_key(parent: NodeKey, child: int) -> NodeKey:
+    depth = parent.depth + 1
+    path = (parent.path << 3) | child
+    return NodeKey(depth=depth, path=path)
 
 
 def leaf_filename(key: NodeKey) -> str:
@@ -25,84 +42,44 @@ def dict_to_key(d: dict) -> NodeKey:
     return NodeKey(depth=int(d["depth"]), path=int(d["path"]))
 
 
+# ------------------------
+# オクトツリー構築
+# ------------------------
 def build_octree(config: Config) -> None:
     """オクトツリーを構築"""
 
-    read_size = config.options.read_size
-    in_dtype = config.options.in_dtype
     max_depth = config.options.max_depth
     max_points_per_leaf = config.options.max_points_per_leaf
-    points_path = config.paths.points_path
-    nodes_dir = config.paths.nodes_dir
     root_path = config.paths.root_path
     oct_manifest_path = config.paths.oct_manifest_path
 
-    # ルートノードを作成
-    root_min, root_max, total = export_root_bin(config)
+    # ルートキャッシュを構築
+    root_min, root_max, total = build_root_bin(config)
 
-    # 出力先フォルダが無ければ作る
-    nodes_dir.mkdir(parents=True, exist_ok=True)
-
+    # ルートキー
     root_key = NodeKey(depth=0, path=1)
-    queue = {root_key: (root_path, root_min, root_max, total)}
-    branches = []
-    leaves = []
+    root_work = NodeWork(root_path, root_min, root_max, total)
 
-    with tqdm(desc="オクトツリー分割", unit="node") as pbar:
-        while queue:
-            key, (bin_path, vmin, vmax, count) = queue.popitem()
-            pbar.update(1)
+    # 子キャッシュを構築
+    branches, leaves = build_octree_bins(config, root_key, root_work)
 
-            should_split = key.depth < max_depth and count > max_points_per_leaf
-
-            if not should_split:
-                leaf_bin = nodes_dir / leaf_filename(key)
-                leaf_bin.unlink(missing_ok=True)
-                bin_path.replace(leaf_bin)
-                leaves.append(
-                    {
-                        "key": key_to_dict(key),
-                        "min": np.asarray(vmin, np.float32).tolist(),
-                        "max": np.asarray(vmax, np.float32).tolist(),
-                        "count": int(count),
-                        "file": leaf_bin.name,
-                    }
-                )
-                continue
-
-            split = split_node_file(config, bin_path, key, vmin, vmax)
-            child_flags = [False] * 8
-
-            for cid, (child_bin, mn, mx, cn) in split.items():
-                child_flags[cid] = True
-                child_key = NodeKey(depth=key.depth + 1, path=(key.path << 3) | cid)
-                queue[child_key] = (child_bin, mn, mx, cn)
-
-            branches.append(
-                {
-                    "key": key_to_dict(key),
-                    "min": np.asarray(vmin, np.float32).tolist(),
-                    "max": np.asarray(vmax, np.float32).tolist(),
-                    "count": int(count),
-                    "children": child_flags,
-                }
-            )
-
+    # 全体のメタファイルを作成
     manifest = {
         "root_min": np.asarray(root_min, np.float32).tolist(),
         "root_max": np.asarray(root_max, np.float32).tolist(),
-        "max_depth": int(max_depth),
-        "max_points_per_leaf": int(max_points_per_leaf),
+        "max_depth": max_depth,
+        "max_points_per_leaf": max_points_per_leaf,
         "branches": branches,
         "leaves": leaves,
     }
 
+    # メタファイルを出力
     with oct_manifest_path.open("w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
 
-def export_root_bin(config: "Config") -> tuple[np.ndarray, np.ndarray, int]:
-    """root.bin を出力"""
+def build_root_bin(config: "Config") -> tuple[np.ndarray, np.ndarray, int]:
+    """ルートのキャッシュを構築"""
 
     read_size = config.options.read_size
     in_dtype = config.options.in_dtype
@@ -167,6 +144,85 @@ def export_root_bin(config: "Config") -> tuple[np.ndarray, np.ndarray, int]:
     return vmin, vmax, total
 
 
+def build_octree_bins(
+    config: Config,
+    root_key: NodeKey,
+    root_work: NodeWork,
+) -> tuple[list[dict], list[dict]]:
+    """オクトツリーのキャッシュを構築"""
+
+    max_depth = config.options.max_depth
+    max_points_per_leaf = config.options.max_points_per_leaf
+    nodes_dir = config.paths.nodes_dir
+
+    # 出力先フォルダが無ければ作る
+    nodes_dir.mkdir(parents=True, exist_ok=True)
+
+    # 分解キュー
+    queue = {root_key: root_work}
+    branches = []
+    leaves = []
+
+    # プログレスバー
+    with tqdm(desc="オクトツリー分割", unit="node") as pbar:
+
+        # キューがある間はループ
+        while queue:
+
+            # キューを一個取り出す
+            key, work = queue.popitem()
+            bin_path = work.bin_path
+            vmin = work.vmin
+            vmax = work.vmax
+            count = work.count
+
+            # 分割するかの判定（深さが上限未満 + 点数が指定を超える）
+            should_split = key.depth < max_depth and count > max_points_per_leaf
+
+            # 分割しない場合は葉ノードにする
+            if not should_split:
+                leaf_bin = nodes_dir / leaf_filename(key)
+                leaf_bin.unlink(missing_ok=True)
+                bin_path.replace(leaf_bin)
+                leaves.append(
+                    {
+                        "key": key_to_dict(key),
+                        "min": vmin.tolist(),
+                        "max": vmax.tolist(),
+                        "count": count,
+                        "file": leaf_bin.name,
+                    }
+                )
+                pbar.update(1)
+                continue
+
+            # 子ノードに分割
+            split = split_node_file(config, bin_path, key, vmin, vmax)
+
+            # 子ノードをキューに追加
+            child_flags = [False] * 8
+            for child, (child_bin, mn, mx, cn) in split.items():
+                child_flags[child] = True
+                child_key = make_child_key(key, child)
+                queue[child_key] = NodeWork(child_bin, mn, mx, int(cn))
+
+            # 枝メタファイルを追加
+            branches.append(
+                {
+                    "key": key_to_dict(key),
+                    "min": np.asarray(vmin, np.float32).tolist(),
+                    "max": np.asarray(vmax, np.float32).tolist(),
+                    "count": count,
+                    "children": child_flags,
+                }
+            )
+
+            # プログレスバーを更新
+            pbar.update(1)
+
+    return branches, leaves
+
+
 def split_node_file(
     config: Config,
     node_bin: Path,
@@ -174,81 +230,94 @@ def split_node_file(
     vmin,
     vmax,
 ) -> dict[int, tuple[Path, np.ndarray, np.ndarray, int]]:
+    """8つのノードに分割する関数"""
+
     read_size = config.options.read_size
     in_dtype = config.options.in_dtype
     nodes_dir = config.paths.nodes_dir
 
-    vmin = np.asarray(vmin, np.float32)
-    vmax = np.asarray(vmax, np.float32)
+    # 中心を計算
     center = (vmin + vmax) * 0.5
-    cx, cy, cz = center.tolist()
+    center_x, center_y, center_z = center.tolist()
 
+    # memmap : すべてをRAMに乗せるのを回避するため
     mm = np.memmap(node_bin, mode="r", dtype=in_dtype)
-    n = int(mm.shape[0])
+
+    # 親ノードに点がない場合は削除
+    n = mm.shape[0]
     if n == 0:
         mm._mmap.close()
         del mm
         node_bin.unlink(missing_ok=True)
         return {}
 
+    # 一時ファイル
     child_bins: dict[int, Path] = {}
-    child_counts = np.zeros(8, dtype=np.int64)
-
-    for cid in range(8):
-        child_key = NodeKey(
-            depth=parent_key.depth + 1, path=(parent_key.path << 3) | cid
-        )
+    for child in range(8):
+        child_key = make_child_key(parent_key, child)
         child_bin = nodes_dir / f"tmp_d{child_key.depth}_p{child_key.path}.bin"
         child_bin.unlink(missing_ok=True)
-        child_bins[cid] = child_bin
+        child_bins[child] = child_bin
 
+    # 子ノードごとにファイルを開く
     fps: dict[int, object] = {}
-    for cid in range(8):
-        fps[cid] = child_bins[cid].open("ab", buffering=1024 * 1024)
+    for child in range(8):
+        fps[child] = child_bins[child].open("ab")
 
-    try:
-        for start in range(0, n, read_size):
-            part = mm[start : start + read_size]
-            xs, ys, zs = part["x"], part["y"], part["z"]
+    #  点群を書き込み
+    child_counts = np.zeros(8, dtype=np.int64)
+    for start in range(0, n, read_size):
 
-            cidx = (
-                ((xs >= cx).astype(np.uint8) << 2)
-                | ((ys >= cy).astype(np.uint8) << 1)
-                | ((zs >= cz).astype(np.uint8) << 0)
-            )
+        # 読む箇所を切り出し
+        end = start + read_size
+        part = mm[start:end]
 
-            for cid in range(8):
-                sel = cidx == cid
-                if np.any(sel):
-                    recs = part[sel].copy()
+        # 8分割のどの位置にいるかを3bitで表現
+        part_x, part_y, part_z = part["x"], part["y"], part["z"]
+        cidx = (
+            ((part_x >= center_x).astype(np.uint8) << 2)
+            | ((part_y >= center_y).astype(np.uint8) << 1)
+            | ((part_z >= center_z).astype(np.uint8) << 0)
+        )
 
-                    recs.tofile(fps[cid])
+        # 書き込み 点数を更新
+        for child in range(8):
+            sel = cidx == child
+            if np.any(sel):
+                recs = part[sel]
+                recs.tofile(fps[child])
+                child_counts[child] += recs.size
 
-                    child_counts[cid] += recs.size
+        # 参照を解除
+        del part
 
-            del part
+    # ファイルを閉じる
+    for fp in fps.values():
+        fp.close()
 
-    finally:
-        for fp in fps.values():
-            fp.close()
-
+    # memmapを閉じる
     mm._mmap.close()
     del mm
+
+    # 元のモードを削除
     node_bin.unlink(missing_ok=True)
 
+    # 子ノードの情報を構築
     out: dict[int, tuple[Path, np.ndarray, np.ndarray, int]] = {}
-    for cid in range(8):
-        cnt = int(child_counts[cid])
-        if cnt <= 0:
-            child_bins[cid].unlink(missing_ok=True)
+    for child in range(8):
+        count = child_counts[child]
+        if count <= 0:
+            child_bins[child].unlink(missing_ok=True)
             continue
-        mn, mx = child_aabb(vmin, vmax, cid)
-        out[cid] = (child_bins[cid], mn, mx, cnt)
+        mn, mx = child_aabb(vmin, vmax, child)
+        out[child] = (child_bins[child], mn, mx, count)
 
     return out
 
 
 def child_aabb(vmin, vmax, cidx: int):
+    """分割後の最小最大を計算"""
+
     vmin = np.asarray(vmin, np.float32)
     vmax = np.asarray(vmax, np.float32)
     center = (vmin + vmax) * 0.5
@@ -260,4 +329,5 @@ def child_aabb(vmin, vmax, cidx: int):
 
     child_min = np.where(is_upper == 0, vmin, center)
     child_max = np.where(is_upper == 0, center, vmax)
+
     return child_min, child_max
