@@ -194,31 +194,36 @@ def build_octree_bins(
                     }
                 )
                 pbar.update(1)
-                continue
+            else:
+                # 子ノードに分割
+                split = split_node_file(config, bin_path, key, vmin, vmax)
 
-            # 子ノードに分割
-            split = split_node_file(config, bin_path, key, vmin, vmax)
+                # 子ノードをキューに追加
+                child_flags = [False] * 8
+                for child, (child_bin, mn, mx, cn) in split.items():
+                    child_flags[child] = True
+                    child_key = make_child_key(key, child)
+                    queue[child_key] = NodeWork(child_bin, mn, mx, int(cn))
 
-            # 子ノードをキューに追加
-            child_flags = [False] * 8
-            for child, (child_bin, mn, mx, cn) in split.items():
-                child_flags[child] = True
-                child_key = make_child_key(key, child)
-                queue[child_key] = NodeWork(child_bin, mn, mx, int(cn))
+                # 枝メタファイルを追加
+                branches.append(
+                    {
+                        "key": key_to_dict(key),
+                        "min": np.asarray(vmin, np.float32).tolist(),
+                        "max": np.asarray(vmax, np.float32).tolist(),
+                        "count": count,
+                        "children": child_flags,
+                    }
+                )
 
-            # 枝メタファイルを追加
-            branches.append(
-                {
-                    "key": key_to_dict(key),
-                    "min": np.asarray(vmin, np.float32).tolist(),
-                    "max": np.asarray(vmax, np.float32).tolist(),
-                    "count": count,
-                    "children": child_flags,
-                }
+                # プログレスバーを更新
+                pbar.update(1)
+
+            pbar.set_postfix(
+                depth=key.depth,
+                leaves=len(leaves),
+                queued=len(queue),
             )
-
-            # プログレスバーを更新
-            pbar.update(1)
 
     return branches, leaves
 
