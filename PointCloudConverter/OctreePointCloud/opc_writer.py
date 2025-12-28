@@ -8,6 +8,8 @@ from .config import Config
 
 
 def write_opc(config: Config) -> None:
+    """OPCファイルを出力"""
+
     magic = config.options.magic
     version_major = config.options.version_major
     version_minor = config.options.version_minor
@@ -20,14 +22,15 @@ def write_opc(config: Config) -> None:
     nodes_dir = config.paths.nodes_dir
     opc_path = config.paths.opc_path
 
+    # オクトツリーマニュフェストを読込
     with oct_manifest_path.open("r", encoding="utf-8") as f:
         oct_manifest = json.load(f)
+
+    # LODマニュフェストを読込
     with leaf_lods_path.open("r", encoding="utf-8") as f:
         lod_data = json.load(f)
 
-    root_min = np.asarray(oct_manifest["root_min"], np.float32)
-    root_max = np.asarray(oct_manifest["root_max"], np.float32)
-
+    # LODのleafデータを取得
     leaf_records = lod_data["leaf_records"]
 
     # --- ヘッダー ---
@@ -38,51 +41,64 @@ def write_opc(config: Config) -> None:
         fp.write(struct.pack("<B", version_patch))
 
         fp.write(struct.pack("<B", len(lod_steps)))
-        fp.write(struct.pack("<3f", *root_min))
-        fp.write(struct.pack("<3f", *root_max))
+        fp.write(struct.pack("<3f", *oct_manifest["root_min"]))
+        fp.write(struct.pack("<3f", *oct_manifest["root_max"]))
         fp.write(struct.pack("<I", len(leaf_records)))
 
-        for r in leaf_records:
-            depth = int(r["key"]["depth"])
-            path = int(r["key"]["path"])
+        # leafのメタデータ
+        for record in leaf_records:
+            depth = record["key"]["depth"]
+            path = record["key"]["path"]
             fp.write(struct.pack("<B", depth))
             fp.write(struct.pack("<Q", path))
-            fp.write(struct.pack("<3f", *np.asarray(r["min"], np.float32)))
-            fp.write(struct.pack("<3f", *np.asarray(r["max"], np.float32)))
-            for off, cnt in r["lods"]:
-                fp.write(struct.pack("<Q", int(off)))
-                fp.write(struct.pack("<I", int(cnt)))
+            fp.write(struct.pack("<3f", *record["min"], np.float32))
+            fp.write(struct.pack("<3f", *record["max"], np.float32))
+
+            # LODごとに[このleafの先頭位置,そのLODまでに使用するポイント数]
+            for offset, count in record["lods"]:
+                fp.write(struct.pack("<Q", offset))
+                fp.write(struct.pack("<I", count))
 
     # --- ボディ ---
     lod_steps_desc = sorted(lod_steps, reverse=True)
     with opc_path.open("ab") as fp:
-        for r in tqdm(leaf_records, desc="OPCボディ出力", unit="leaf"):
-            leaf_bin = nodes_dir / r["file"]
+
+        # leafループ
+        for record in tqdm(leaf_records, desc="OPCボディ出力", unit="leaf"):
+
+            leaf_bin = nodes_dir / record["file"]
             mm = np.memmap(leaf_bin, mode="r", dtype=in_dtype)
             n = int(mm.shape[0])
-
             used = np.zeros(n, bool)
+
+            # 書き出し順
             write_parts = []
-            for s in lod_steps_desc:
-                idx = utils.downsample_indices(n, step=int(s))
+
+            # LODループ
+            for step in lod_steps_desc:
+                idx = utils.downsample_indices(n, step=int(step))
                 new = idx[~used[idx]]
                 used[new] = True
                 write_parts.append(new)
-            order = (
-                np.concatenate(write_parts) if write_parts else np.array([], np.int64)
-            )
 
-            vmin = np.asarray(r["min"], np.float32)
-            vmax = np.asarray(r["max"], np.float32)
+            # LODごとに分かれている配列を連結
+            order = np.concatenate(write_parts)
 
+            # leafの最小 / 最大
+            vmin = record["min"]
+            vmax = record["max"]
+
+            # 座標を量子化
             qx = utils.quantize_u16(mm["x"][order], vmin[0], vmax[0])
             qy = utils.quantize_u16(mm["y"][order], vmin[1], vmax[1])
             qz = utils.quantize_u16(mm["z"][order], vmin[2], vmax[2])
 
+            # 色を量子化
             rr = utils.convert_color(mm["r"][order])
             gg = utils.convert_color(mm["g"][order])
             bb = utils.convert_color(mm["b"][order])
 
+            # leafの点データを構成
             out = np.empty(order.size, dtype=out_dtype)
             out["x"] = qx.astype(np.uint16, copy=False)
             out["y"] = qy.astype(np.uint16, copy=False)
