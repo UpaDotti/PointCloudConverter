@@ -1,5 +1,4 @@
 import json
-import struct
 import numpy as np
 from tqdm import tqdm
 
@@ -13,6 +12,7 @@ def build_leaf_lods(config: Config) -> None:
 
     in_dtype = config.options.in_dtype
     lod_steps = config.options.lod_steps
+    out_dtype = config.options.out_dtype
     nodes_dir = config.paths.nodes_dir
     leaf_lods_path = config.paths.leaf_lods_path
     oct_manifest_path = config.paths.oct_manifest_path
@@ -28,7 +28,7 @@ def build_leaf_lods(config: Config) -> None:
     )
 
     offset = 0
-    point_struct = struct.Struct("<HHHBBBB")
+    point_size = out_dtype.itemsize
     leaf_records = []
 
     # leafごとのループ / プログレスバー
@@ -70,7 +70,7 @@ def build_leaf_lods(config: Config) -> None:
         lods = [(base, cumulative[s]) for s in lod_steps]
 
         # このleafのポイント分のバイト数を進める
-        offset += total_points * point_struct.size
+        offset += total_points * point_size
 
         # leafデータを追加
         leaf_records.append(
@@ -91,7 +91,6 @@ def build_leaf_lods(config: Config) -> None:
     # LOD全体のデータを構築
     out = {
         "lod_steps": [s for s in lod_steps],
-        "point_struct": "<HHHBBBB",
         "leaf_count": len(leaf_records),
         "total_body_bytes": offset,
         "leaf_records": leaf_records,
