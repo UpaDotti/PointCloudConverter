@@ -28,7 +28,6 @@ def build_leaf_lods(config: Config) -> None:
     )
 
     offset = 0
-    point_size = out_dtype.itemsize
     leaf_records = []
 
     # leafごとのループ / プログレスバー
@@ -64,13 +63,13 @@ def build_leaf_lods(config: Config) -> None:
         total_points = cumulative[lod_steps[0]]
 
         # このleafの先頭がどのバイト位置から始まるか
-        base = offset
+        base_offset = offset
 
         # LODごとに[このleafの先頭位置,そのLODまでに使用するポイント数]
-        lods = [(base, cumulative[s]) for s in lod_steps]
+        lod_counts = [int(cumulative[int(s)]) for s in lod_steps]
 
-        # このleafのポイント分のバイト数を進める
-        offset += total_points * point_size
+        # このleafのポイント分の位置を進める
+        offset += total_points
 
         # leafデータを追加
         leaf_records.append(
@@ -80,7 +79,8 @@ def build_leaf_lods(config: Config) -> None:
                 "max": leaf["max"],
                 "count": leaf["count"],
                 "file": leaf["file"],
-                "lods": [[a, b] for (a, b) in lods],
+                "base_offset": base_offset,
+                "lod_counts": lod_counts,
             }
         )
 
@@ -92,7 +92,7 @@ def build_leaf_lods(config: Config) -> None:
     out = {
         "lod_steps": [s for s in lod_steps],
         "leaf_count": len(leaf_records),
-        "total_body_bytes": offset,
+        "total_points": offset,
         "leaf_records": leaf_records,
     }
 

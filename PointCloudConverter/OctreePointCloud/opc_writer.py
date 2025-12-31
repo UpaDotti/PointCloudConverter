@@ -62,17 +62,15 @@ def write_opc(config: Config) -> None:
 
         # leafのメタデータ
         for record in leaf_records:
-            depth = record["key"]["depth"]
-            path = record["key"]["path"]
-            fp.write(struct.pack("<B", depth))
-            fp.write(struct.pack("<Q", path))
+            fp.write(struct.pack("<B", record["key"]["depth"]))
+            fp.write(struct.pack("<Q", record["key"]["path"]))
             fp.write(struct.pack("<3f", *record["min"]))
             fp.write(struct.pack("<3f", *record["max"]))
+            fp.write(struct.pack("<Q", record["base_offset"]))
 
-            # LODごとに[このleafの先頭位置,そのLODまでに使用するポイント数]
-            for offset, count in record["lods"]:
-                fp.write(struct.pack("<Q", offset))
-                fp.write(struct.pack("<I", count))
+            # LODごとの点数
+            for c in record["lod_counts"]:
+                fp.write(struct.pack("<I", c))
 
     # --- ボディ ---
     lod_steps_desc = sorted(lod_steps, reverse=True)
