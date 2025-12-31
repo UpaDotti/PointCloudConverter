@@ -67,6 +67,7 @@ def build_octree(config: Config) -> None:
     manifest = {
         "root_min": np.asarray(root_min, np.float32).tolist(),
         "root_max": np.asarray(root_max, np.float32).tolist(),
+        "total_points": total,
         "max_depth": max_depth,
         "max_points_per_leaf": max_points_per_leaf,
         "branches": branches,

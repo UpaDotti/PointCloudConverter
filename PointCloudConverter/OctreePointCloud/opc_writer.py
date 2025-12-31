@@ -33,17 +33,32 @@ def write_opc(config: Config) -> None:
     # LODのleafデータを取得
     leaf_records = lod_data["leaf_records"]
 
+    # ここで構築段階の情報を整理
+    root_min = np.array(oct_manifest["root_min"], dtype=np.float32)
+    root_max = np.array(oct_manifest["root_max"], dtype=np.float32)
+    size = root_max - root_min
+
     # --- ヘッダー ---
     with opc_path.open("wb") as fp:
+        # Version
         fp.write(magic)
         fp.write(struct.pack("<B", version_major))
         fp.write(struct.pack("<B", version_minor))
         fp.write(struct.pack("<B", version_patch))
 
+        # Bound
+        fp.write(struct.pack("<3f", *size))
+        fp.write(struct.pack("<3f", *root_min))
+        fp.write(struct.pack("<3f", *root_max))
+
+        # LOD
         fp.write(struct.pack("<B", len(lod_steps)))
-        fp.write(struct.pack("<3f", *oct_manifest["root_min"]))
-        fp.write(struct.pack("<3f", *oct_manifest["root_max"]))
+        for s in lod_steps:
+            fp.write(struct.pack("<I", int(s)))
+
+        # Status
         fp.write(struct.pack("<I", len(leaf_records)))
+        fp.write(struct.pack("<Q", oct_manifest["total_points"]))
 
         # leafのメタデータ
         for record in leaf_records:
@@ -51,8 +66,8 @@ def write_opc(config: Config) -> None:
             path = record["key"]["path"]
             fp.write(struct.pack("<B", depth))
             fp.write(struct.pack("<Q", path))
-            fp.write(struct.pack("<3f", *record["min"], np.float32))
-            fp.write(struct.pack("<3f", *record["max"], np.float32))
+            fp.write(struct.pack("<3f", *record["min"]))
+            fp.write(struct.pack("<3f", *record["max"]))
 
             # LODごとに[このleafの先頭位置,そのLODまでに使用するポイント数]
             for offset, count in record["lods"]:
