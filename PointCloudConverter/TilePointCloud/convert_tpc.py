@@ -12,7 +12,7 @@ import numpy as np
 from tqdm import tqdm
 
 # 自作モジュール
-import utils
+from PointCloudConverter import utils
 
 # ------------------------
 # 設定
@@ -43,7 +43,7 @@ LOD_FIRST_STEP = 1
 LOD_STEP_FACTOR = 4
 LOD_STEPS = ()
 
-READ_SIZE = 10000
+READ_SIZE = 50_000
 PATTERN = "*.las"
 POINT_DTYPE = np.dtype(
     [
@@ -173,7 +173,7 @@ def chunk_point_cloud():
     ) as pbar:
         while processed < total:
             # 一気に読み込むサイズを制限
-            n = min(10000, total - processed)
+            n = min(READ_SIZE, total - processed)
 
             # 点データを取得
             recs = np.fromfile(fp, dtype=POINT_DTYPE, count=n)
