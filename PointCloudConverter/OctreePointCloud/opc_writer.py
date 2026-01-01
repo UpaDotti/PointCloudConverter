@@ -26,6 +26,9 @@ def write_opc(config: Config) -> None:
     with oct_manifest_path.open("r", encoding="utf-8") as f:
         oct_manifest = json.load(f)
 
+    # branchデータを取得
+    branches = oct_manifest["branches"]
+
     # LODマニュフェストを読込
     with leaf_lods_path.open("r", encoding="utf-8") as f:
         lod_data = json.load(f)
@@ -33,7 +36,7 @@ def write_opc(config: Config) -> None:
     # LODのleafデータを取得
     leaf_records = lod_data["leaf_records"]
 
-    # ここで構築段階の情報を整理
+    #  サイズを計算
     root_min = np.array(oct_manifest["root_min"], dtype=np.float32)
     root_max = np.array(oct_manifest["root_max"], dtype=np.float32)
     size = root_max - root_min
@@ -57,8 +60,20 @@ def write_opc(config: Config) -> None:
             fp.write(struct.pack("<I", int(s)))
 
         # Status
-        fp.write(struct.pack("<I", len(leaf_records)))
         fp.write(struct.pack("<Q", oct_manifest["total_points"]))
+        fp.write(struct.pack("<I", len(branches)))
+        fp.write(struct.pack("<I", len(leaf_records)))
+
+        # branchのメタデータ
+        for branch in branches:
+            fp.write(struct.pack("<B", branch["key"]["depth"]))
+            fp.write(struct.pack("<Q", branch["key"]["path"]))
+            fp.write(struct.pack("<3f", *branch["min"]))
+            fp.write(struct.pack("<3f", *branch["max"]))
+
+            # children有無
+            for c in branch["children"]:
+                fp.write(struct.pack("<B", 1 if c else 0))
 
         # leafのメタデータ
         for record in leaf_records:

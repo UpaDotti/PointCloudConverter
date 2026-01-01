@@ -226,7 +226,15 @@ def build_octree_bins(
                 queued=len(queue),
             )
 
-    return branches, leaves
+    branches_sorted = sorted(
+        branches, key=lambda branch: (branch["key"]["depth"], branch["key"]["path"])
+    )
+
+    leaves_sorted = sorted(
+        leaves, key=lambda leaf: (leaf["key"]["depth"], leaf["key"]["path"])
+    )
+
+    return branches_sorted, leaves_sorted
 
 
 def split_node_file(
