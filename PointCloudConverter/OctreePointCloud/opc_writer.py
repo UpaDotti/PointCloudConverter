@@ -71,10 +71,6 @@ def write_opc(config: Config) -> None:
             fp.write(struct.pack("<3f", *branch["min"]))
             fp.write(struct.pack("<3f", *branch["max"]))
 
-            # children有無
-            for c in branch["children"]:
-                fp.write(struct.pack("<B", 1 if c else 0))
-
         # leafのメタデータ
         for record in leaf_records:
             fp.write(struct.pack("<B", record["key"]["depth"]))
