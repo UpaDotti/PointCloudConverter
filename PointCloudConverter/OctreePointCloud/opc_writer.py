@@ -60,9 +60,10 @@ def write_opc(config: Config) -> None:
             fp.write(struct.pack("<I", int(s)))
 
         # Status
-        fp.write(struct.pack("<Q", oct_manifest["total_points"]))
         fp.write(struct.pack("<I", len(branches)))
         fp.write(struct.pack("<I", len(leaf_records)))
+        fp.write(struct.pack("<Q", oct_manifest["total_points"]))
+        fp.write(struct.pack("<H", int(out_dtype.itemsize)))
 
         # branchのメタデータ
         for branch in branches:
