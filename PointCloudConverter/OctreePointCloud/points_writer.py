@@ -19,7 +19,7 @@ def compute_points_center(config: Config) -> np.ndarray:
     las_dir = config.paths.las_dir
 
     # .lasファイルを取得
-    las_paths = list(las_dir.glob(pattern))
+    las_paths = _find_las_paths(las_dir, pattern)
 
     # .lasが見つからないときはエラー
     if not las_paths:
@@ -67,7 +67,7 @@ def export_points_bin(config: Config, center: np.ndarray) -> None:
     points_path = config.paths.points_path
 
     # .lasファイルを取得
-    las_paths = list(las_dir.glob(pattern))
+    las_paths = _find_las_paths(las_dir, pattern)
 
     # .lasが見つからないときはエラー
     if not las_paths:
@@ -135,3 +135,9 @@ def _to_unity_xyz(pts, scale: np.ndarray, offset: np.ndarray):
     z = y_real
 
     return x, y, z
+
+
+def _find_las_paths(las_dir, pattern: str):
+    """指定フォルダ配下のLASファイルを再帰的に取得する"""
+
+    return sorted(path for path in las_dir.rglob(pattern) if path.is_file())
