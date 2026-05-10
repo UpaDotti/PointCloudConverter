@@ -73,7 +73,8 @@ def write_opc(config: Config) -> None:
             fp.write(struct.pack("<3f", *branch["max"]))
 
         # leafのメタデータ
-        for record in leaf_records:
+        for leaf_idx, record in enumerate(leaf_records):
+            fp.write(struct.pack("<I", leaf_idx))
             fp.write(struct.pack("<B", record["key"]["depth"]))
             fp.write(struct.pack("<Q", record["key"]["path"]))
             fp.write(struct.pack("<3f", *record["min"]))
