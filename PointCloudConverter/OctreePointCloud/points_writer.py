@@ -26,8 +26,8 @@ def compute_points_center(config: Config) -> np.ndarray:
         raise FileNotFoundError("LASファイルが見つかりません")
 
     # 最小値/ 最大値 （最初は ∞ / -∞）
-    min_v = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
-    max_v = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float32)
+    vmin = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
+    vmax = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float32)
 
     # .lasを開いていく / プログレスバー
     for las_path in tqdm(las_paths, desc="点群の中心を計算", unit="file"):
@@ -44,15 +44,15 @@ def compute_points_center(config: Config) -> np.ndarray:
                 x, y, z = _to_unity_xyz(pts, scale, offset)
 
                 # 最小値 / 最大値 を取得
-                mins = np.array([x.min(), y.min(), z.min()], dtype=np.float32)
-                maxs = np.array([x.max(), y.max(), z.max()], dtype=np.float32)
+                chunk_min = np.array([x.min(), y.min(), z.min()], dtype=np.float32)
+                chunk_max = np.array([x.max(), y.max(), z.max()], dtype=np.float32)
 
                 # 最小値 / 最大値 を更新
-                min_v = np.minimum(min_v, mins)
-                max_v = np.maximum(max_v, maxs)
+                vmin = np.minimum(vmin, chunk_min)
+                vmax = np.maximum(vmax, chunk_max)
 
     # 中心を計算
-    center = (min_v + max_v) * 0.5
+    center = (vmin + vmax) * 0.5
 
     return center
 

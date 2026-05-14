@@ -34,6 +34,10 @@ def leaf_filename(key: NodeKey) -> str:
     return f"leaf_d{key.depth}_p{key.path}.bin"
 
 
+def branch_filename(key: NodeKey) -> str:
+    return f"branch_d{key.depth}_p{key.path}.bin"
+
+
 def key_to_dict(k: NodeKey) -> dict:
     return {"depth": int(k.depth), "path": int(k.path)}
 

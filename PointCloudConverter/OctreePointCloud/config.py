@@ -1,9 +1,6 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
 import numpy as np
-
-from PointCloudConverter import utils
 
 
 @dataclass(frozen=True)
@@ -19,12 +16,7 @@ class Options:
     # オクトツリー
     max_depth: int = 8  # 深さ
     max_points_per_leaf: int = 200_000  # 葉ノードの最大点数
-
-    # LOD
-    lod_levels: int = 7  # 段数
-    lod_first: int = 1  # 最初のステップ
-    lod_factor: int = 4  # ステップごとの倍率
-    lod_steps: Tuple[int, ...] = field(init=False)  # LODステップ
+    max_points_per_branch: int = 50_000  # 枝ノードの最大代表点数
 
     # I/O
     pattern: str = "*.las"  # 入力ファイルの検索パターン
@@ -56,12 +48,6 @@ class Options:
         ],
         align=False,
     )
-
-    def __post_init__(self) -> None:
-
-        # LODのステップを生成
-        steps = utils.make_lod_steps(self.lod_levels, self.lod_first, self.lod_factor)
-        object.__setattr__(self, "lod_steps", tuple(map(int, steps)))
 
 
 @dataclass(frozen=True)
@@ -101,6 +87,11 @@ class Paths:
     @property
     def leaf_lods_path(self) -> Path:
         return self.out_dir / "leaf_lods.json"
+
+    # 枝の代表点メタファイル
+    @property
+    def branch_lods_path(self) -> Path:
+        return self.out_dir / "branch_lods.json"
 
 
 @dataclass(frozen=True)
