@@ -81,6 +81,9 @@ def write_opc(config: Config) -> None:
             fp.write(struct.pack("<Q", record["base_offset"]))
             fp.write(struct.pack("<I", int(record["point_count"])))
 
+    # 描画時に「先頭N点」で均等分布になるよう順序をシャッフルする乱数源
+    rng = np.random.default_rng(seed=0)
+
     # --- ボディ ---
     with opc_path.open("ab") as fp:
 
@@ -114,6 +117,10 @@ def write_opc(config: Config) -> None:
             out["g"] = gg.astype(np.uint8, copy=False)
             out["b"] = bb.astype(np.uint8, copy=False)
             out["a"] = 255
+
+            # 描画時の動的間引きで偏りが出ないよう順序をシャッフル
+            if n > 1:
+                rng.shuffle(out)
 
             out.tofile(fp)
 
@@ -155,6 +162,10 @@ def write_opc(config: Config) -> None:
             out["g"] = gg.astype(np.uint8, copy=False)
             out["b"] = bb.astype(np.uint8, copy=False)
             out["a"] = 255
+
+            # 枝の代表点も先頭N点で均等になるよう順序をシャッフル
+            if n > 1:
+                rng.shuffle(out)
 
             out.tofile(fp)
 
