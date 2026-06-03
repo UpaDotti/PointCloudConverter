@@ -101,10 +101,24 @@ def build_branch_lods(config: Config) -> None:
         # 辞書に登録
         branch_bin_by_path[key.path] = out_bin
 
+        # 保存boundsは幾何セルではなく、代表点の実範囲(tight)にする（葉と同じ方針）
+        bounds_min = [
+            float(summary["x"].min()),
+            float(summary["y"].min()),
+            float(summary["z"].min()),
+        ]
+        bounds_max = [
+            float(summary["x"].max()),
+            float(summary["y"].max()),
+            float(summary["z"].max()),
+        ]
+
         # 代表点データを保存
         branch_data_by_path[key.path] = {
             "point_count": int(summary.size),
             "file": out_bin.name,
+            "min": bounds_min,
+            "max": bounds_max,
         }
 
     # depth → path 順に並べてbranch_recordsを構築
@@ -119,8 +133,8 @@ def build_branch_lods(config: Config) -> None:
         data = branch_data_by_path[path]
         record = {
             "key": branch["key"],
-            "min": branch["min"],
-            "max": branch["max"],
+            "min": data["min"],
+            "max": data["max"],
             "point_count": data["point_count"],
             "file": data["file"],
             "base_offset": offset,

@@ -40,6 +40,23 @@ def build_leaf_lods(config: Config) -> None:
         # この葉の点数
         point_count = int(mm.shape[0])
 
+        # 保存boundsは幾何セルではなく「実際の点の範囲(tight)」にする
+        # 八分木の分割は幾何セルのまま。ビューアの点サイズ/量子化精度を正しくするため保存値だけ実範囲にする
+        if point_count > 0:
+            bounds_min = [
+                float(mm["x"].min()),
+                float(mm["y"].min()),
+                float(mm["z"].min()),
+            ]
+            bounds_max = [
+                float(mm["x"].max()),
+                float(mm["y"].max()),
+                float(mm["z"].max()),
+            ]
+        else:
+            bounds_min = leaf["min"]
+            bounds_max = leaf["max"]
+
         # このleafの先頭がどのバイト位置から始まるか
         base_offset = offset
 
@@ -50,8 +67,8 @@ def build_leaf_lods(config: Config) -> None:
         leaf_records.append(
             {
                 "key": {"depth": key.depth, "path": key.path},
-                "min": leaf["min"],
-                "max": leaf["max"],
+                "min": bounds_min,
+                "max": bounds_max,
                 "count": leaf["count"],
                 "file": leaf["file"],
                 "base_offset": base_offset,
