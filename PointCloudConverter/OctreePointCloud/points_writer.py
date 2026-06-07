@@ -5,10 +5,10 @@ from tqdm import tqdm
 from .config import Config
 
 
-def write_points_bin(config: Config) -> None:
-    """点群キャッシュファイルを作成"""
+def write_points_bin(config: Config) -> tuple[np.ndarray, np.ndarray]:
+    """点群キャッシュファイルを作成し、中心寄せ後の最小値 / 最大値を返す"""
     center = compute_points_center(config)
-    export_points_bin(config, center)
+    return export_points_bin(config, center)
 
 
 def compute_points_center(config: Config) -> np.ndarray:
@@ -58,8 +58,8 @@ def compute_points_center(config: Config) -> np.ndarray:
     return center
 
 
-def export_points_bin(config: Config, center: np.ndarray) -> None:
-    """点群のキャッシュファイルを出力"""
+def export_points_bin(config: Config, center: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """点群のキャッシュファイルを出力し、中心寄せ後の最小値 / 最大値を返す"""
 
     read_size = config.options.read_size
     pattern = config.options.pattern
@@ -79,6 +79,11 @@ def export_points_bin(config: Config, center: np.ndarray) -> None:
 
     # 出力先フォルダが無ければ作る
     points_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 中心寄せ後の最小値 / 最大値（最初は ∞ / -∞）
+    # ルートノードのメタ情報として使うため、書き込みと同時に計算する
+    vmin = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
+    vmax = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float32)
 
     # ファイルが無ければ作成 / あれば中身をリセット
     with points_path.open("wb") as fp:
@@ -102,6 +107,12 @@ def export_points_bin(config: Config, center: np.ndarray) -> None:
                     y = (y - center[1]).astype(np.float32)
                     z = (z - center[2]).astype(np.float32)
 
+                    # 中心寄せ後の最小値 / 最大値を更新
+                    chunk_min = np.array([x.min(), y.min(), z.min()], dtype=np.float32)
+                    chunk_max = np.array([x.max(), y.max(), z.max()], dtype=np.float32)
+                    vmin = np.minimum(vmin, chunk_min)
+                    vmax = np.maximum(vmax, chunk_max)
+
                     # RGBを取得
                     r = pts["red"].astype(np.uint16, copy=False)
                     g = pts["green"].astype(np.uint16, copy=False)
@@ -121,6 +132,8 @@ def export_points_bin(config: Config, center: np.ndarray) -> None:
 
                     # バイナリに変換して書き込み
                     recs.tofile(fp)
+
+    return vmin, vmax
 
 
 def _to_unity_xyz(pts, scale: np.ndarray, offset: np.ndarray):

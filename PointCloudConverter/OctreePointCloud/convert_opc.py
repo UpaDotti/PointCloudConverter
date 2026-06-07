@@ -28,8 +28,8 @@ def main() -> None:
     options = Options()
     config = Config(paths=paths, options=options)
 
-    write_points_bin(config)
-    build_octree(config)
+    points_min, points_max = write_points_bin(config)
+    build_octree(config, points_min, points_max)
     build_leaf_lods(config)
     build_branch_lods(config)
     write_opc(config)

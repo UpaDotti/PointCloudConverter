@@ -49,7 +49,7 @@ def dict_to_key(d: dict) -> NodeKey:
 # ------------------------
 # オクトツリー構築
 # ------------------------
-def build_octree(config: Config) -> None:
+def build_octree(config: Config, points_min: np.ndarray, points_max: np.ndarray) -> None:
     """オクトツリーを構築"""
 
     max_depth = config.options.max_depth
@@ -57,8 +57,12 @@ def build_octree(config: Config) -> None:
     root_path = config.paths.root_path
     oct_manifest_path = config.paths.oct_manifest_path
 
-    # ルートキャッシュを構築
-    root_min, root_max, total = build_root_bin(config)
+    # ルートキャッシュを構築（points.bin を root.bin に移動）
+    total = build_root_bin(config)
+
+    # ルートの範囲はキャッシュ作成時に計算済みの最小値 / 最大値を使う
+    root_min = np.asarray(points_min, np.float32)
+    root_max = np.asarray(points_max, np.float32)
 
     # ルートキー
     root_key = NodeKey(depth=0, path=1)
@@ -83,10 +87,9 @@ def build_octree(config: Config) -> None:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
 
-def build_root_bin(config: "Config") -> tuple[np.ndarray, np.ndarray, int]:
-    """ルートのキャッシュを構築"""
+def build_root_bin(config: "Config") -> int:
+    """ルートのキャッシュを構築（points.bin を root.bin に移動し、点数を返す）"""
 
-    read_size = config.options.read_size
     in_dtype = config.options.in_dtype
     points_path = config.paths.points_path
     root_path = config.paths.root_path
@@ -100,53 +103,11 @@ def build_root_bin(config: "Config") -> tuple[np.ndarray, np.ndarray, int]:
     # 点数を計算
     total = size // in_dtype.itemsize
 
-    # 最小値/最大値（最初は∞ / -∞）
-    vmin = np.array([np.inf, np.inf, np.inf], np.float32)
-    vmax = np.array([-np.inf, -np.inf, -np.inf], np.float32)
+    # コピーではなく移動にする（丸ごと読み書きする1パスを削減）
+    root_path.unlink(missing_ok=True)
+    points_path.replace(root_path)
 
-    # ファイルを開く
-    with points_path.open("rb") as fp:
-
-        # ファイルが無ければ作成 / あれば中身をリセット
-        with root_path.open("wb") as out:
-
-            # プログレスバー
-            with tqdm(total=total, desc="Root作成", unit="pts") as pbar:
-
-                # 点数分ループ
-                processed = 0
-                while processed < total:
-
-                    # 読込する点数
-                    n = min(read_size, total - processed)
-
-                    # バイナリはから点データを復元
-                    recs = np.fromfile(fp, dtype=in_dtype, count=n)
-
-                    # バイナリに変換して書き込み
-                    recs.tofile(out)
-
-                    # 最小値
-                    xmin = recs["x"].min()
-                    ymin = recs["y"].min()
-                    zmin = recs["z"].min()
-
-                    # 最大値
-                    xmax = recs["x"].max()
-                    ymax = recs["y"].max()
-                    zmax = recs["z"].max()
-
-                    # 最小値 / 最大値を更新
-                    vmin = np.minimum(vmin, [xmin, ymin, zmin])
-                    vmax = np.maximum(vmax, [xmax, ymax, zmax])
-
-                    # 処理した点数を更新
-                    processed += recs.size
-
-                    # プログレスバーを更新
-                    pbar.update(recs.size)
-
-    return vmin, vmax, total
+    return total
 
 
 def build_octree_bins(
