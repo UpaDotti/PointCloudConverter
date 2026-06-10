@@ -127,6 +127,9 @@ def write_opc(config: Config) -> None:
             mm._mmap.close()
             del mm
 
+            # 書き出し済みの葉binは以降使わないため削除（ピーク使用量を削減）
+            leaf_bin.unlink(missing_ok=True)
+
         # branchループ
         for record in tqdm(branch_records, desc="OPCボディ出力(Branch)", unit="branch"):
 

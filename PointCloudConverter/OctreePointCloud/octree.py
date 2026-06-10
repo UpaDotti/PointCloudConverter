@@ -38,6 +38,10 @@ def branch_filename(key: NodeKey) -> str:
     return f"branch_d{key.depth}_p{key.path}.bin"
 
 
+def tmp_filename(key: NodeKey) -> str:
+    return f"tmp_d{key.depth}_p{key.path}.bin"
+
+
 def key_to_dict(k: NodeKey) -> dict:
     return {"depth": int(k.depth), "path": int(k.path)}
 
@@ -49,27 +53,50 @@ def dict_to_key(d: dict) -> NodeKey:
 # ------------------------
 # オクトツリー構築
 # ------------------------
-def build_octree(config: Config, points_min: np.ndarray, points_max: np.ndarray) -> None:
-    """オクトツリーを構築"""
+def build_octree(
+    config: Config,
+    points_min: np.ndarray,
+    points_max: np.ndarray,
+    child_counts: dict[int, int],
+) -> None:
+    """オクトツリーを構築（ルートはキャッシュ作成時に8分割済み）"""
 
     max_depth = config.options.max_depth
     max_points_per_leaf = config.options.max_points_per_leaf
-    root_path = config.paths.root_path
+    nodes_dir = config.paths.nodes_dir
     oct_manifest_path = config.paths.oct_manifest_path
-
-    # ルートキャッシュを構築（points.bin を root.bin に移動）
-    total = build_root_bin(config)
 
     # ルートの範囲はキャッシュ作成時に計算済みの最小値 / 最大値を使う
     root_min = np.asarray(points_min, np.float32)
     root_max = np.asarray(points_max, np.float32)
 
+    # 合計点数を計算
+    total = sum(child_counts.values())
+
     # ルートキー
     root_key = NodeKey(depth=0, path=1)
-    root_work = NodeWork(root_path, root_min, root_max, total)
+
+    # 振り分け済みの子キャッシュをキューに積む
+    queue: dict[NodeKey, NodeWork] = {}
+    child_flags = [False] * 8
+    for child, count in child_counts.items():
+        child_flags[child] = True
+        child_key = make_child_key(root_key, child)
+        child_bin = nodes_dir / tmp_filename(child_key)
+        child_min, child_max = child_aabb(root_min, root_max, child)
+        queue[child_key] = NodeWork(child_bin, child_min, child_max, count)
+
+    # ルートは振り分け済みなので最初から枝として記録
+    root_branch = {
+        "key": key_to_dict(root_key),
+        "min": root_min.tolist(),
+        "max": root_max.tolist(),
+        "count": total,
+        "children": child_flags,
+    }
 
     # 子キャッシュを構築
-    branches, leaves = build_octree_bins(config, root_key, root_work)
+    branches, leaves = build_octree_bins(config, queue, [root_branch])
 
     # 全体のメタファイルを作成
     manifest = {
@@ -87,33 +114,10 @@ def build_octree(config: Config, points_min: np.ndarray, points_max: np.ndarray)
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
 
-def build_root_bin(config: "Config") -> int:
-    """ルートのキャッシュを構築（points.bin を root.bin に移動し、点数を返す）"""
-
-    in_dtype = config.options.in_dtype
-    points_path = config.paths.points_path
-    root_path = config.paths.root_path
-
-    # 出力先フォルダが無ければ作る
-    root_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # バイト数を取得
-    size = points_path.stat().st_size
-
-    # 点数を計算
-    total = size // in_dtype.itemsize
-
-    # コピーではなく移動にする（丸ごと読み書きする1パスを削減）
-    root_path.unlink(missing_ok=True)
-    points_path.replace(root_path)
-
-    return total
-
-
 def build_octree_bins(
     config: Config,
-    root_key: NodeKey,
-    root_work: NodeWork,
+    queue: dict[NodeKey, NodeWork],
+    branches: list[dict],
 ) -> tuple[list[dict], list[dict]]:
     """オクトツリーのキャッシュを構築"""
 
@@ -124,9 +128,9 @@ def build_octree_bins(
     # 出力先フォルダが無ければ作る
     nodes_dir.mkdir(parents=True, exist_ok=True)
 
-    # 分解キュー
-    queue = {root_key: root_work}
-    branches = []
+    # 分解キュー（呼び出し元から振り分け済みノードを受け取る）
+    queue = dict(queue)
+    branches = list(branches)
     leaves = []
 
     # プログレスバー
@@ -234,7 +238,7 @@ def split_node_file(
     child_bins: dict[int, Path] = {}
     for child in range(8):
         child_key = make_child_key(parent_key, child)
-        child_bin = nodes_dir / f"tmp_d{child_key.depth}_p{child_key.path}.bin"
+        child_bin = nodes_dir / tmp_filename(child_key)
         child_bin.unlink(missing_ok=True)
         child_bins[child] = child_bin
 

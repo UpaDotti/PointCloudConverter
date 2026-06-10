@@ -1,14 +1,17 @@
+from pathlib import Path
+
 import numpy as np
 import laspy
 from tqdm import tqdm
 
 from .config import Config
+from .octree import NodeKey, make_child_key, tmp_filename
 
 
-def write_points_bin(config: Config) -> tuple[np.ndarray, np.ndarray]:
-    """点群キャッシュファイルを作成し、中心寄せ後の最小値 / 最大値を返す"""
+def write_child_bins(config: Config) -> tuple[np.ndarray, np.ndarray, dict[int, int]]:
+    """点群を8分割キャッシュへ直接振り分け、中心寄せ後の最小値 / 最大値と子ごとの点数を返す"""
     center = compute_points_center(config)
-    return export_points_bin(config, center)
+    return export_child_bins(config, center)
 
 
 def compute_points_center(config: Config) -> np.ndarray:
@@ -58,14 +61,14 @@ def compute_points_center(config: Config) -> np.ndarray:
     return center
 
 
-def export_points_bin(config: Config, center: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """点群のキャッシュファイルを出力し、中心寄せ後の最小値 / 最大値を返す"""
+def export_child_bins(config: Config, center: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict[int, int]]:
+    """LASを読みながら8つの子キャッシュへ直接振り分け、最小値 / 最大値と子ごとの点数を返す"""
 
     read_size = config.options.read_size
     pattern = config.options.pattern
     in_dtype = config.options.in_dtype
     las_dir = config.paths.las_dir
-    points_path = config.paths.points_path
+    nodes_dir = config.paths.nodes_dir
 
     # .lasファイルを取得
     las_paths = _find_las_paths(las_dir, pattern)
@@ -78,16 +81,28 @@ def export_points_bin(config: Config, center: np.ndarray) -> tuple[np.ndarray, n
     center = np.asarray(center, dtype=np.float64)
 
     # 出力先フォルダが無ければ作る
-    points_path.parent.mkdir(parents=True, exist_ok=True)
+    nodes_dir.mkdir(parents=True, exist_ok=True)
+
+    # 8つの子キャッシュのパスを用意（前回の残骸があれば消す）
+    root_key = NodeKey(depth=0, path=1)
+    child_bins: dict[int, Path] = {}
+    for child in range(8):
+        child_key = make_child_key(root_key, child)
+        child_bin = nodes_dir / tmp_filename(child_key)
+        child_bin.unlink(missing_ok=True)
+        child_bins[child] = child_bin
 
     # 中心寄せ後の最小値 / 最大値（最初は ∞ / -∞）
     # ルートノードのメタ情報として使うため、書き込みと同時に計算する
     vmin = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
     vmax = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float32)
 
-    # ファイルが無ければ作成 / あれば中身をリセット
-    with points_path.open("wb") as fp:
+    # 子ごとの点数
+    child_counts = np.zeros(8, dtype=np.int64)
 
+    # 子ノードごとにファイルを開く
+    fps = {child: child_bins[child].open("wb") for child in range(8)}
+    try:
         # .lasを開いていく / プログレスバー
         for las_path in tqdm(las_paths, desc="キャッシュを作成", unit="file"):
             with laspy.open(las_path) as reader:
@@ -130,10 +145,34 @@ def export_points_bin(config: Config, center: np.ndarray) -> tuple[np.ndarray, n
                     recs["g"] = g
                     recs["b"] = b
 
-                    # バイナリに変換して書き込み
-                    recs.tofile(fp)
+                    # 中心寄せ後はルートの中心が原点になるため、分割面は0固定で8分割の行き先を決める
+                    cidx = (
+                        ((x >= 0).astype(np.uint8) << 2)
+                        | ((y >= 0).astype(np.uint8) << 1)
+                        | ((z >= 0).astype(np.uint8) << 0)
+                    )
 
-    return vmin, vmax
+                    # 子ごとに振り分けて書き込み
+                    for child in range(8):
+                        sel = cidx == child
+                        if np.any(sel):
+                            part = recs[sel]
+                            part.tofile(fps[child])
+                            child_counts[child] += part.size
+    finally:
+        # ファイルを閉じる
+        for fp in fps.values():
+            fp.close()
+
+    # 点が入らなかった子ファイルは削除
+    for child in range(8):
+        if child_counts[child] == 0:
+            child_bins[child].unlink(missing_ok=True)
+
+    # 点がある子だけの点数辞書を作る
+    counts = {child: int(child_counts[child]) for child in range(8) if child_counts[child] > 0}
+
+    return vmin, vmax, counts
 
 
 def _to_unity_xyz(pts, scale: np.ndarray, offset: np.ndarray):
