@@ -116,7 +116,6 @@ def write_opc(config: Config) -> None:
             out["r"] = rr.astype(np.uint8, copy=False)
             out["g"] = gg.astype(np.uint8, copy=False)
             out["b"] = bb.astype(np.uint8, copy=False)
-            out["a"] = 255
 
             # 描画時の動的間引きで偏りが出ないよう順序をシャッフル
             if n > 1:
@@ -164,7 +163,6 @@ def write_opc(config: Config) -> None:
             out["r"] = rr.astype(np.uint8, copy=False)
             out["g"] = gg.astype(np.uint8, copy=False)
             out["b"] = bb.astype(np.uint8, copy=False)
-            out["a"] = 255
 
             # 枝の代表点も先頭N点で均等になるよう順序をシャッフル
             if n > 1:

@@ -44,7 +44,6 @@ class Options:
             ("r", "u1"),  # 8bit
             ("g", "u1"),
             ("b", "u1"),
-            ("a", "u1"),
         ],
         align=False,
     )
