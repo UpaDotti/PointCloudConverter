@@ -16,7 +16,7 @@ class Options:
     # オクトツリー
     max_depth: int = 8  # 深さ
     max_points_per_leaf: int = 200_000  # 葉ノードの最大点数
-    max_points_per_branch: int = 50_000  # 枝ノードの最大代表点数
+    max_points_per_branch: int = 30_000  # 枝ノードの最大代表点数
 
     # I/O
     pattern: str = "*.las"  # 入力ファイルの検索パターン
