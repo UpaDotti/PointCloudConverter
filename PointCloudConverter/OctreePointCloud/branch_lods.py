@@ -1,11 +1,9 @@
 import json
-from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from PointCloudConverter import utils
 from .config import Config
-from .octree import branch_filename, dict_to_key, make_child_key
+from .octree import BRANCHES_FILENAME, array_bounds, dict_to_key, make_child_key, sample_for_parent
 
 
 def build_branch_lods(config: Config) -> None:
@@ -30,96 +28,81 @@ def build_branch_lods(config: Config) -> None:
         leaf_lod_data = json.load(f)
     leaf_total_points = int(leaf_lod_data["total_points"])
 
-    # path → 葉のbinパス辞書
-    leaf_bin_by_path: dict[int, Path] = {}
+    # path → 葉の間引き済みの点の位置（ファイル上で分割した枝の子になった葉だけが持つ）
+    leaf_sample_by_path: dict[int, dict] = {}
     for leaf in leaves:
-        path = int(leaf["key"]["path"])
-        leaf_bin_by_path[path] = nodes_dir / leaf["file"]
-
-    # path → 枝の代表点binパス辞書（処理しながら追加）
-    branch_bin_by_path: dict[int, Path] = {}
+        if "sample" in leaf:
+            leaf_sample_by_path[int(leaf["key"]["path"])] = leaf["sample"]
 
     # 深い枝から処理（ボトムアップ）
     branches_sorted = sorted(branches, key=lambda b: -int(b["key"]["depth"]))
 
-    # path → 代表点データ（point_count / file）
+    # path → 代表点データ（point_count / offset / min / max）
     branch_data_by_path: dict[int, dict] = {}
 
     # 1つの子から取る最大点数
     max_per_child = max(1, max_per_branch // 8)
 
-    # 枝ループ
-    for branch in tqdm(branches_sorted, desc="Branch代表点生成", unit="branch"):
+    # 枝の代表点ファイル（子の代表点を読み、生成した代表点を末尾に追記する）
+    with (nodes_dir / BRANCHES_FILENAME).open("r+b") as fp:
 
-        key = dict_to_key(branch["key"])
-        out_bin = nodes_dir / branch_filename(key)
+        # 枝ループ
+        for branch in tqdm(branches_sorted, desc="Branch代表点生成", unit="branch"):
 
-        # 子から代表点を集める
-        chunks = []
-        for child_idx in range(8):
-            if not branch["children"][child_idx]:
+            key = dict_to_key(branch["key"])
+
+            # オクトツリー構築時（メモリ上の部分木）に生成済みの代表点はそのまま使う
+            if "lod" in branch:
+                branch_data_by_path[key.path] = branch["lod"]
                 continue
 
-            child_key = make_child_key(key, child_idx)
-            child_path = child_key.path
+            # 子から代表点を集める
+            chunks = []
+            for child_idx in range(8):
+                if not branch["children"][child_idx]:
+                    continue
 
-            # 子のソースbinを選ぶ（枝なら代表点 / 葉なら生点）
-            if child_path in branch_bin_by_path:
-                src = branch_bin_by_path[child_path]
-            elif child_path in leaf_bin_by_path:
-                src = leaf_bin_by_path[child_path]
-            else:
+                child_key = make_child_key(key, child_idx)
+                child_path = child_key.path
+
+                # 子のソースを選ぶ（枝なら代表点 / 葉なら間引き済みの点）
+                if child_path in branch_data_by_path:
+                    src = branch_data_by_path[child_path]
+                elif child_path in leaf_sample_by_path:
+                    src = leaf_sample_by_path[child_path]
+                else:
+                    continue
+
+                # ソースを読み込む（代表点 / 間引き済みの点なので小さい）
+                n = int(src["point_count"])
+                if n == 0:
+                    continue
+                fp.seek(int(src["offset"]) * in_dtype.itemsize)
+                pts = np.fromfile(fp, dtype=in_dtype, count=n)
+
+                # 固定間隔で間引いて上限まで取る
+                chunks.append(sample_for_parent(pts, max_per_child))
+
+            # 子が一つもなければスキップ
+            if not chunks:
                 continue
 
-            # ソースの点数を取得
-            mm = np.memmap(src, mode="r", dtype=in_dtype)
-            n = int(mm.shape[0])
-            if n == 0:
-                mm._mmap.close()
-                del mm
-                continue
+            # 連結して末尾に追記
+            summary = np.concatenate(chunks)
+            fp.seek(0, 2)
+            offset = fp.tell() // in_dtype.itemsize
+            summary.tofile(fp)
 
-            # 固定間隔で間引いて上限まで取る
-            step = max(1, n // max_per_child)
-            idx = utils.downsample_indices(n, step=step)
-            if idx.size > max_per_child:
-                idx = idx[:max_per_child]
-            sample = np.array(mm[idx])
-            chunks.append(sample)
+            # 保存boundsは幾何セルではなく、代表点の実範囲(tight)にする（葉と同じ方針）
+            bounds_min, bounds_max = array_bounds(summary)
 
-            mm._mmap.close()
-            del mm
-
-        # 子が一つもなければスキップ
-        if not chunks:
-            continue
-
-        # 連結して書き出し
-        summary = np.concatenate(chunks)
-        summary.tofile(out_bin)
-
-        # 辞書に登録
-        branch_bin_by_path[key.path] = out_bin
-
-        # 保存boundsは幾何セルではなく、代表点の実範囲(tight)にする（葉と同じ方針）
-        bounds_min = [
-            float(summary["x"].min()),
-            float(summary["y"].min()),
-            float(summary["z"].min()),
-        ]
-        bounds_max = [
-            float(summary["x"].max()),
-            float(summary["y"].max()),
-            float(summary["z"].max()),
-        ]
-
-        # 代表点データを保存
-        branch_data_by_path[key.path] = {
-            "point_count": int(summary.size),
-            "file": out_bin.name,
-            "min": bounds_min,
-            "max": bounds_max,
-        }
+            # 代表点データを保存
+            branch_data_by_path[key.path] = {
+                "point_count": int(summary.size),
+                "offset": offset,
+                "min": bounds_min,
+                "max": bounds_max,
+            }
 
     # depth → path 順に並べてbranch_recordsを構築
     branches_in_order = sorted(
@@ -127,7 +110,7 @@ def build_branch_lods(config: Config) -> None:
     )
 
     branch_records = []
-    offset = leaf_total_points
+    base_offset = leaf_total_points
     for branch in branches_in_order:
         path = int(branch["key"]["path"])
         data = branch_data_by_path[path]
@@ -136,10 +119,10 @@ def build_branch_lods(config: Config) -> None:
             "min": data["min"],
             "max": data["max"],
             "point_count": data["point_count"],
-            "file": data["file"],
-            "base_offset": offset,
+            "offset": data["offset"],
+            "base_offset": base_offset,
         }
-        offset += data["point_count"]
+        base_offset += data["point_count"]
         branch_records.append(record)
 
     # メタ全体を構築

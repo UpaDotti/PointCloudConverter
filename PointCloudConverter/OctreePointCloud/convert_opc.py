@@ -18,7 +18,7 @@ def main() -> None:
     2. オクトツリー構築
     3. LOD構築
     4. 枝の代表点を生成
-    5. OPC書き出し（葉binは書き出し後に逐次削除）
+    5. OPC書き出し（葉binは葉の書き出し後に削除）
     6. キャッシュファイル削除
     """
     LAS_DIR = Path(r"C:\Users\user\Desktop\点群")

@@ -21,6 +21,7 @@ class Options:
     # I/O
     pattern: str = "*.las"  # 入力ファイルの検索パターン
     read_size: int = 2_000_000  # 1回で読む点数
+    max_points_in_memory: int = 20_000_000  # この点数以下のノードはRAM上で一括分割する（1点18byte＋並べ替え用の作業領域）
 
     # 中間形式
     in_dtype = np.dtype(

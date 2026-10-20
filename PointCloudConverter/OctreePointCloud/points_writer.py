@@ -5,7 +5,7 @@ import laspy
 from tqdm import tqdm
 
 from .config import Config
-from .octree import NodeKey, make_child_key, tmp_filename
+from .octree import NodeKey, child_index, make_child_key, partition_by_child, tmp_filename
 
 
 def write_child_bins(config: Config) -> tuple[np.ndarray, np.ndarray, dict[int, int]]:
@@ -18,7 +18,6 @@ def compute_points_center(config: Config) -> np.ndarray:
     """点群の中心を計算"""
 
     pattern = config.options.pattern
-    read_size = config.options.read_size
     las_dir = config.paths.las_dir
 
     # .lasファイルを取得
@@ -33,27 +32,15 @@ def compute_points_center(config: Config) -> np.ndarray:
     vmin = np.array([np.inf, np.inf, np.inf], dtype=np.float64)
     vmax = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float64)
 
-    # .lasを開いていく / プログレスバー
-    for las_path in tqdm(las_paths, desc="点群の中心を計算", unit="file"):
+    # LASヘッダーに記録された範囲を使う（全点を読まずに済む）
+    for las_path in las_paths:
         with laspy.open(las_path) as reader:
+            header_min = np.array(reader.header.mins, dtype=np.float64)
+            header_max = np.array(reader.header.maxs, dtype=np.float64)
 
-            # スケール / オフセットを取得（精度維持のため float64）
-            scale = np.array(reader.header.scales, dtype=np.float64)
-            offset = np.array(reader.header.offsets, dtype=np.float64)
-
-            # 指定の点数ごとに読む
-            for pts in reader.chunk_iterator(read_size):
-
-                # 実座標にしてUnity座標系にする
-                x, y, z = _to_unity_xyz(pts, scale, offset)
-
-                # 最小値 / 最大値 を取得
-                chunk_min = np.array([x.min(), y.min(), z.min()], dtype=np.float64)
-                chunk_max = np.array([x.max(), y.max(), z.max()], dtype=np.float64)
-
-                # 最小値 / 最大値 を更新
-                vmin = np.minimum(vmin, chunk_min)
-                vmax = np.maximum(vmax, chunk_max)
+        # Y/Z 入れ替え（Unity座標系）
+        vmin = np.minimum(vmin, header_min[[0, 2, 1]])
+        vmax = np.maximum(vmax, header_max[[0, 2, 1]])
 
     # 中心を計算
     center = (vmin + vmax) * 0.5
@@ -146,19 +133,15 @@ def export_child_bins(config: Config, center: np.ndarray) -> tuple[np.ndarray, n
                     recs["b"] = b
 
                     # 中心寄せ後はルートの中心が原点になるため、分割面は0固定で8分割の行き先を決める
-                    cidx = (
-                        ((x >= 0).astype(np.uint8) << 2)
-                        | ((y >= 0).astype(np.uint8) << 1)
-                        | ((z >= 0).astype(np.uint8) << 0)
-                    )
+                    cidx = child_index(x, y, z, 0, 0, 0)
 
-                    # 子ごとに振り分けて書き込み
+                    # 子ごとに並べ替えて連続領域を書き込み
+                    sorted_recs, bounds = partition_by_child(recs, cidx)
                     for child in range(8):
-                        sel = cidx == child
-                        if np.any(sel):
-                            part = recs[sel]
-                            part.tofile(fps[child])
-                            child_counts[child] += part.size
+                        s, e = bounds[child], bounds[child + 1]
+                        if e > s:
+                            sorted_recs[s:e].tofile(fps[child])
+                            child_counts[child] += e - s
     finally:
         # ファイルを閉じる
         for fp in fps.values():

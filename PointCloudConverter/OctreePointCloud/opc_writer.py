@@ -5,6 +5,7 @@ from tqdm import tqdm
 
 from PointCloudConverter import utils
 from .config import Config
+from .octree import BRANCHES_FILENAME, LEAVES_FILENAME
 
 
 def write_opc(config: Config) -> None:
@@ -85,90 +86,45 @@ def write_opc(config: Config) -> None:
     rng = np.random.default_rng(seed=0)
 
     # --- ボディ ---
+    leaves_bin = nodes_dir / LEAVES_FILENAME
+    branches_bin = nodes_dir / BRANCHES_FILENAME
     with opc_path.open("ab") as fp:
 
-        # leafループ
-        for record in tqdm(leaf_records, desc="OPCボディ出力(Leaf)", unit="leaf"):
+        # leafループ（葉の点はオクトツリー構築時に量子化済み）
+        with leaves_bin.open("rb") as src:
+            for record in tqdm(leaf_records, desc="OPCボディ出力(Leaf)", unit="leaf"):
 
-            leaf_bin = nodes_dir / record["file"]
-            mm = np.memmap(leaf_bin, mode="r", dtype=in_dtype)
-            n = int(mm.shape[0])
+                n = int(record["point_count"])
+                src.seek(int(record["offset"]) * out_dtype.itemsize)
+                out = np.fromfile(src, dtype=out_dtype, count=n)
 
-            # leafの最小 / 最大
-            vmin = record["min"]
-            vmax = record["max"]
+                # 描画時の動的間引きで偏りが出ないよう順序をシャッフル
+                if n > 1:
+                    rng.shuffle(out)
 
-            # 座標を量子化
-            qx = utils.quantize_u16(mm["x"], vmin[0], vmax[0])
-            qy = utils.quantize_u16(mm["y"], vmin[1], vmax[1])
-            qz = utils.quantize_u16(mm["z"], vmin[2], vmax[2])
+                out.tofile(fp)
 
-            # 色を量子化
-            rr = utils.convert_color(mm["r"])
-            gg = utils.convert_color(mm["g"])
-            bb = utils.convert_color(mm["b"])
-
-            # leafの点データを構成
-            out = np.empty(n, dtype=out_dtype)
-            out["x"] = qx.astype(np.uint16, copy=False)
-            out["y"] = qy.astype(np.uint16, copy=False)
-            out["z"] = qz.astype(np.uint16, copy=False)
-            out["r"] = rr.astype(np.uint8, copy=False)
-            out["g"] = gg.astype(np.uint8, copy=False)
-            out["b"] = bb.astype(np.uint8, copy=False)
-
-            # 描画時の動的間引きで偏りが出ないよう順序をシャッフル
-            if n > 1:
-                rng.shuffle(out)
-
-            out.tofile(fp)
-
-            mm._mmap.close()
-            del mm
-
-            # 書き出し済みの葉binは以降使わないため削除（ピーク使用量を削減）
-            leaf_bin.unlink(missing_ok=True)
+        # 書き出し済みの葉binは以降使わないため削除（ピーク使用量を削減）
+        leaves_bin.unlink(missing_ok=True)
 
         # branchループ
-        for record in tqdm(branch_records, desc="OPCボディ出力(Branch)", unit="branch"):
+        with branches_bin.open("rb") as src:
+            for record in tqdm(branch_records, desc="OPCボディ出力(Branch)", unit="branch"):
 
-            # 代表点が無い枝はスキップ
-            if int(record["point_count"]) == 0 or record["file"] is None:
-                continue
+                # 代表点が無い枝はスキップ
+                n = int(record["point_count"])
+                if n == 0:
+                    continue
 
-            # 代表点のbinをmemmapで開く
-            branch_bin = nodes_dir / record["file"]
-            mm = np.memmap(branch_bin, mode="r", dtype=in_dtype)
-            n = int(mm.shape[0])
+                # 代表点を読み込む
+                src.seek(int(record["offset"]) * in_dtype.itemsize)
+                pts = np.fromfile(src, dtype=in_dtype, count=n)
 
-            # 量子化用のbounds
-            vmin = record["min"]
-            vmax = record["max"]
+                # 量子化用のboundsで出力配列を構成
+                out = utils.quantize_points(pts, record["min"], record["max"], out_dtype)
 
-            # 座標を量子化
-            qx = utils.quantize_u16(mm["x"], vmin[0], vmax[0])
-            qy = utils.quantize_u16(mm["y"], vmin[1], vmax[1])
-            qz = utils.quantize_u16(mm["z"], vmin[2], vmax[2])
+                # 枝の代表点も先頭N点で均等になるよう順序をシャッフル
+                if n > 1:
+                    rng.shuffle(out)
 
-            # 色を量子化
-            rr = utils.convert_color(mm["r"])
-            gg = utils.convert_color(mm["g"])
-            bb = utils.convert_color(mm["b"])
-
-            # 出力配列を構成
-            out = np.empty(n, dtype=out_dtype)
-            out["x"] = qx.astype(np.uint16, copy=False)
-            out["y"] = qy.astype(np.uint16, copy=False)
-            out["z"] = qz.astype(np.uint16, copy=False)
-            out["r"] = rr.astype(np.uint8, copy=False)
-            out["g"] = gg.astype(np.uint8, copy=False)
-            out["b"] = bb.astype(np.uint8, copy=False)
-
-            # 枝の代表点も先頭N点で均等になるよう順序をシャッフル
-            if n > 1:
-                rng.shuffle(out)
-
-            out.tofile(fp)
-
-            mm._mmap.close()
-            del mm
+                out.tofile(fp)

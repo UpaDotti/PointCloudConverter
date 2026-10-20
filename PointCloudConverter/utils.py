@@ -1,8 +1,22 @@
+import functools
+
 import numpy as np
 
 
 def convert_color(channel_16: np.ndarray) -> np.ndarray:
-    # 点群の色をtcp用に変換
+    # 点群の色をtcp用に変換（16bit入力は65536通りしかないので変換表を引く）
+    if channel_16.dtype == np.uint16:
+        return _color_lut()[channel_16]
+    return _convert_color_calc(channel_16)
+
+
+@functools.cache
+def _color_lut() -> np.ndarray:
+    # 16bit色 → 8bitリニア色の変換表
+    return _convert_color_calc(np.arange(65536, dtype=np.uint16))
+
+
+def _convert_color_calc(channel_16: np.ndarray) -> np.ndarray:
     v_255 = (channel_16.astype(np.float32) / 65535.0) * 255.0  # 16bit → 0〜255(float)
     v_linear = gamma_to_linear(v_255)  # ガンマ → リニア
     v_scaled = v_linear * 255.0  # 0〜255 にスケール
@@ -15,6 +29,19 @@ def gamma_to_linear(c):
     # sRGB(ガンマ)値をリニアRGBに変換
     c = c / 255.0
     return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def quantize_points(src: np.ndarray, vmin, vmax, out_dtype: np.dtype) -> np.ndarray:
+    """座標をboundsで16bitに、色を8bitに量子化した出力形式の点群を作る"""
+
+    out = np.empty(src.shape[0], dtype=out_dtype)
+    out["x"] = quantize_u16(src["x"], vmin[0], vmax[0])
+    out["y"] = quantize_u16(src["y"], vmin[1], vmax[1])
+    out["z"] = quantize_u16(src["z"], vmin[2], vmax[2])
+    out["r"] = convert_color(src["r"])
+    out["g"] = convert_color(src["g"])
+    out["b"] = convert_color(src["b"])
+    return out
 
 
 def downsample_indices(n, step):

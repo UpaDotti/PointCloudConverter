@@ -4,6 +4,7 @@ import json
 import numpy as np
 from tqdm import tqdm
 
+from PointCloudConverter import utils
 from .config import Config
 
 
@@ -24,18 +25,44 @@ class NodeKey:
     path: int
 
 
+class PointStore:
+    """点群を1つのファイルに追記し、追記位置（点数単位のオフセット）を返す"""
+
+    def __init__(self, path: Path):
+        self.fp = path.open("wb")
+        self.count = 0
+
+    def append(self, pts: np.ndarray) -> int:
+        offset = self.count
+        pts.tofile(self.fp)
+        self.count += int(pts.shape[0])
+        return offset
+
+    def close(self) -> None:
+        self.fp.close()
+
+
+@dataclass
+class BuildState:
+    """オクトツリー構築中の出力先"""
+
+    branches: list[dict]
+    leaves: list[dict]
+    leaf_store: PointStore
+    branch_store: PointStore
+    pbar: tqdm
+
+
 def make_child_key(parent: NodeKey, child: int) -> NodeKey:
     depth = parent.depth + 1
     path = (parent.path << 3) | child
     return NodeKey(depth=depth, path=path)
 
 
-def leaf_filename(key: NodeKey) -> str:
-    return f"leaf_d{key.depth}_p{key.path}.bin"
-
-
-def branch_filename(key: NodeKey) -> str:
-    return f"branch_d{key.depth}_p{key.path}.bin"
+# 葉 / 枝の代表点はノードごとにファイルを分けず、1つのファイルに追記してオフセットで参照する
+# （Windowsでは新規ファイルを初めて開くたびにウイルススキャンの待ちが入り、ノード数が多いと大きな時間になるため）
+LEAVES_FILENAME = "leaves.bin"  # 葉の点（量子化済み / out_dtype）
+BRANCHES_FILENAME = "branches.bin"  # 枝の代表点と、代表点生成用に間引いた葉の点（in_dtype）
 
 
 def tmp_filename(key: NodeKey) -> str:
@@ -123,6 +150,8 @@ def build_octree_bins(
 
     max_depth = config.options.max_depth
     max_points_per_leaf = config.options.max_points_per_leaf
+    max_points_in_memory = config.options.max_points_in_memory
+    in_dtype = config.options.in_dtype
     nodes_dir = config.paths.nodes_dir
 
     # 出力先フォルダが無ければ作る
@@ -133,8 +162,13 @@ def build_octree_bins(
     branches = list(branches)
     leaves = []
 
+    # 葉 / 枝の代表点の書き出し先
+    leaf_store = PointStore(nodes_dir / LEAVES_FILENAME)
+    branch_store = PointStore(nodes_dir / BRANCHES_FILENAME)
+
     # プログレスバー
     with tqdm(desc="オクトツリー分割", unit="node") as pbar:
+        state = BuildState(branches, leaves, leaf_store, branch_store, pbar)
 
         # キューがある間はループ
         while queue:
@@ -149,20 +183,29 @@ def build_octree_bins(
             # 分割するかの判定（深さが上限未満 + 点数が指定を超える）
             should_split = key.depth < max_depth and count > max_points_per_leaf
 
-            # 分割しない場合は葉ノードにする
-            if not should_split:
-                leaf_bin = nodes_dir / leaf_filename(key)
-                leaf_bin.unlink(missing_ok=True)
-                bin_path.replace(leaf_bin)
-                leaves.append(
-                    {
-                        "key": key_to_dict(key),
-                        "min": vmin.tolist(),
-                        "max": vmax.tolist(),
-                        "count": count,
-                        "file": leaf_bin.name,
-                    }
-                )
+            # メモリに載る点数なら一度だけ読み込み、部分木をメモリ上で分割して葉と枝の代表点を書き出す
+            if count <= max_points_in_memory:
+                pts = np.fromfile(bin_path, dtype=in_dtype)
+                bin_path.unlink(missing_ok=True)
+                summary = build_subtree_in_memory(config, key, pts, vmin, vmax, state)
+                del pts
+
+                # 部分木の根が葉なら、親（ファイル上で分割した枝）の代表点用に間引いた点を残す
+                if not should_split:
+                    leaves[-1]["sample"] = write_leaf_sample(config, summary, branch_store)
+
+            # 分割しない場合は葉ノードにする（メモリに載らない葉はチャンクごとに処理）
+            elif not should_split:
+                tight_min, tight_max = file_bounds(config, bin_path)
+                mm = np.memmap(bin_path, mode="r", dtype=in_dtype)
+                sample = write_leaf_sample(config, mm, branch_store)
+                offset = quantize_file(config, mm, leaf_store, tight_min, tight_max)
+                mm._mmap.close()
+                del mm
+                bin_path.unlink(missing_ok=True)
+                record = leaf_record(key, vmin, vmax, count, offset, tight_min, tight_max)
+                record["sample"] = sample
+                leaves.append(record)
                 pbar.update(1)
             else:
                 # 子ノードに分割
@@ -176,15 +219,7 @@ def build_octree_bins(
                     queue[child_key] = NodeWork(child_bin, mn, mx, int(cn))
 
                 # 枝メタファイルを追加
-                branches.append(
-                    {
-                        "key": key_to_dict(key),
-                        "min": np.asarray(vmin, np.float32).tolist(),
-                        "max": np.asarray(vmax, np.float32).tolist(),
-                        "count": count,
-                        "children": child_flags,
-                    }
-                )
+                branches.append(branch_record(key, vmin, vmax, count, child_flags))
 
                 # プログレスバーを更新
                 pbar.update(1)
@@ -195,6 +230,9 @@ def build_octree_bins(
                 queued=len(queue),
             )
 
+    leaf_store.close()
+    branch_store.close()
+
     branches_sorted = sorted(
         branches, key=lambda branch: (branch["key"]["depth"], branch["key"]["path"])
     )
@@ -204,6 +242,156 @@ def build_octree_bins(
     )
 
     return branches_sorted, leaves_sorted
+
+
+def build_subtree_in_memory(
+    config: Config,
+    key: NodeKey,
+    pts: np.ndarray,
+    vmin,
+    vmax,
+    state: BuildState,
+) -> np.ndarray:
+    """
+    メモリ上の点群を再帰的に8分割し、葉（量子化済み）と枝の代表点をファイルに書き出す
+    戻り値は親が代表点を間引く元になる点群（葉なら生点 / 枝なら代表点）
+    """
+
+    max_depth = config.options.max_depth
+    max_points_per_leaf = config.options.max_points_per_leaf
+    out_dtype = config.options.out_dtype
+    count = int(pts.shape[0])
+
+    # 分割しない場合は葉ノードにする（保存用の実範囲で量子化して書き出す）
+    should_split = key.depth < max_depth and count > max_points_per_leaf
+    if not should_split:
+        tight_min, tight_max = array_bounds(pts)
+        offset = state.leaf_store.append(utils.quantize_points(pts, tight_min, tight_max, out_dtype))
+        state.leaves.append(leaf_record(key, vmin, vmax, count, offset, tight_min, tight_max))
+        state.pbar.update(1)
+        return pts
+
+    # 子ごとに連続するよう並べ替える
+    center = (vmin + vmax) * 0.5
+    center_x, center_y, center_z = center.tolist()
+    cidx = child_index(pts["x"], pts["y"], pts["z"], center_x, center_y, center_z)
+    sorted_pts, bounds = partition_by_child(pts, cidx)
+    del cidx
+
+    # 枝メタファイルを追加
+    child_flags = [bool(bounds[child + 1] > bounds[child]) for child in range(8)]
+    record = branch_record(key, vmin, vmax, count, child_flags)
+    state.branches.append(record)
+    state.pbar.update(1)
+
+    # 点がある子だけ再帰し、子から代表点を集める（ボトムアップ）
+    max_per_child = max(1, config.options.max_points_per_branch // 8)
+    chunks = []
+    for child in range(8):
+        if not child_flags[child]:
+            continue
+        mn, mx = child_aabb(vmin, vmax, child)
+        part = sorted_pts[bounds[child] : bounds[child + 1]]
+        child_summary = build_subtree_in_memory(
+            config, make_child_key(key, child), part, mn, mx, state
+        )
+        chunks.append(sample_for_parent(child_summary, max_per_child))
+    del sorted_pts
+
+    # 代表点を書き出し、メタを枝に記録
+    summary = np.concatenate(chunks)
+    offset = state.branch_store.append(summary)
+    tight_min, tight_max = array_bounds(summary)
+    record["lod"] = {
+        "point_count": int(summary.size),
+        "offset": offset,
+        "min": tight_min,
+        "max": tight_max,
+    }
+
+    return summary
+
+
+def sample_for_parent(src: np.ndarray, max_per_child: int) -> np.ndarray:
+    """親の代表点用に、固定間隔で間引いて上限まで取る"""
+
+    n = int(src.shape[0])
+    step = max(1, n // max_per_child)
+    idx = utils.downsample_indices(n, step=step)
+    if idx.size > max_per_child:
+        idx = idx[:max_per_child]
+    return np.array(src[idx])
+
+
+def write_leaf_sample(config: Config, src: np.ndarray, store: PointStore) -> dict:
+    """親の代表点用に間引いた葉の点を書き出し、位置と点数を返す"""
+
+    max_per_child = max(1, config.options.max_points_per_branch // 8)
+    sample = sample_for_parent(src, max_per_child)
+    offset = store.append(sample)
+    return {"offset": offset, "point_count": int(sample.size)}
+
+
+def quantize_file(config: Config, mm: np.ndarray, store: PointStore, vmin, vmax) -> int:
+    """memmap上の点群をチャンクごとに量子化して書き出し、先頭の位置を返す"""
+
+    read_size = config.options.read_size
+    out_dtype = config.options.out_dtype
+    offset = store.count
+    for start in range(0, mm.shape[0], read_size):
+        part = np.array(mm[start : start + read_size])
+        store.append(utils.quantize_points(part, vmin, vmax, out_dtype))
+    return offset
+
+
+def leaf_record(key: NodeKey, vmin, vmax, count: int, offset: int, tight_min, tight_max) -> dict:
+    """葉のメタデータ（min/maxは幾何セル、tight_min/tight_maxは実際の点の範囲、offsetは葉ファイル内の位置）"""
+
+    return {
+        "key": key_to_dict(key),
+        "min": np.asarray(vmin, np.float32).tolist(),
+        "max": np.asarray(vmax, np.float32).tolist(),
+        "count": int(count),
+        "offset": int(offset),
+        "tight_min": tight_min,
+        "tight_max": tight_max,
+    }
+
+
+def branch_record(key: NodeKey, vmin, vmax, count: int, child_flags: list[bool]) -> dict:
+    """枝のメタデータ"""
+
+    return {
+        "key": key_to_dict(key),
+        "min": np.asarray(vmin, np.float32).tolist(),
+        "max": np.asarray(vmax, np.float32).tolist(),
+        "count": int(count),
+        "children": child_flags,
+    }
+
+
+def array_bounds(pts: np.ndarray) -> tuple[list[float], list[float]]:
+    """点群の実範囲(tight)"""
+
+    bounds_min = [float(pts["x"].min()), float(pts["y"].min()), float(pts["z"].min())]
+    bounds_max = [float(pts["x"].max()), float(pts["y"].max()), float(pts["z"].max())]
+    return bounds_min, bounds_max
+
+
+def file_bounds(config: Config, node_bin: Path) -> tuple[list[float], list[float]]:
+    """binファイル内の点群の実範囲(tight)をチャンクごとに読んで計算"""
+
+    read_size = config.options.read_size
+    mm = np.memmap(node_bin, mode="r", dtype=config.options.in_dtype)
+    vmin = np.full(3, np.inf, dtype=np.float32)
+    vmax = np.full(3, -np.inf, dtype=np.float32)
+    for start in range(0, mm.shape[0], read_size):
+        chunk_min, chunk_max = array_bounds(np.array(mm[start : start + read_size]))
+        vmin = np.minimum(vmin, chunk_min)
+        vmax = np.maximum(vmax, chunk_max)
+    mm._mmap.close()
+    del mm
+    return [float(v) for v in vmin], [float(v) for v in vmax]
 
 
 def split_node_file(
@@ -251,28 +439,23 @@ def split_node_file(
     child_counts = np.zeros(8, dtype=np.int64)
     for start in range(0, n, read_size):
 
-        # 読む箇所を切り出し
+        # 読む箇所を切り出し（連続領域としてRAMに読み込む）
         end = start + read_size
-        part = mm[start:end]
+        part = np.array(mm[start:end])
 
-        # 8分割のどの位置にいるかを3bitで表現
-        part_x, part_y, part_z = part["x"], part["y"], part["z"]
-        cidx = (
-            ((part_x >= center_x).astype(np.uint8) << 2)
-            | ((part_y >= center_y).astype(np.uint8) << 1)
-            | ((part_z >= center_z).astype(np.uint8) << 0)
-        )
+        # 8分割のどの位置にいるか
+        cidx = child_index(part["x"], part["y"], part["z"], center_x, center_y, center_z)
 
-        # 書き込み 点数を更新
+        # 子ごとに並べ替えて連続領域を書き込み 点数を更新
+        sorted_part, bounds = partition_by_child(part, cidx)
         for child in range(8):
-            sel = cidx == child
-            if np.any(sel):
-                recs = part[sel]
-                recs.tofile(fps[child])
-                child_counts[child] += recs.size
+            s, e = bounds[child], bounds[child + 1]
+            if e > s:
+                sorted_part[s:e].tofile(fps[child])
+                child_counts[child] += e - s
 
         # 参照を解除
-        del part
+        del part, sorted_part
 
     # ファイルを閉じる
     for fp in fps.values():
@@ -296,6 +479,34 @@ def split_node_file(
         out[child] = (child_bins[child], mn, mx, count)
 
     return out
+
+
+def child_index(x, y, z, center_x, center_y, center_z) -> np.ndarray:
+    """8分割のどの位置にいるかを3bitで表現"""
+
+    return (
+        ((x >= center_x).astype(np.uint8) << 2)
+        | ((y >= center_y).astype(np.uint8) << 1)
+        | ((z >= center_z).astype(np.uint8) << 0)
+    )
+
+
+def partition_by_child(recs: np.ndarray, cidx: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """子ごとに連続するよう並べ替え、並べ替え後の配列と子ごとの区切り位置を返す（子内の順序は維持）"""
+
+    # 安定ソートで子番号順に並べる（uint8なので基数ソートになり高速）
+    order = np.argsort(cidx, kind="stable")
+
+    # 構造体のまま並べ替えるより、同サイズのバイト列(void)として並べ替えるほうが速い
+    void_dtype = np.dtype((np.void, recs.dtype.itemsize))
+    sorted_recs = recs.view(void_dtype)[order].view(recs.dtype)
+
+    # 子ごとの点数から区切り位置を作る
+    counts = np.bincount(cidx, minlength=8)
+    bounds = np.zeros(9, dtype=np.int64)
+    np.cumsum(counts, out=bounds[1:])
+
+    return sorted_recs, bounds
 
 
 def child_aabb(vmin, vmax, cidx: int):
