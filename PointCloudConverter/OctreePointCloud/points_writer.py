@@ -4,6 +4,7 @@ import numpy as np
 import laspy
 from tqdm import tqdm
 
+from PointCloudConverter import utils
 from .config import Config
 from .octree import NodeKey, child_index, make_child_key, partition_by_child, tmp_filename
 
@@ -87,61 +88,35 @@ def export_child_bins(config: Config, center: np.ndarray) -> tuple[np.ndarray, n
     # 子ごとの点数
     child_counts = np.zeros(8, dtype=np.int64)
 
+    # 読み込むチャンク（LASファイル / 開始位置 / 点数）を列挙
+    tasks = []
+    for las_path in las_paths:
+        with laspy.open(las_path) as reader:
+            point_count = int(reader.header.point_count)
+        for start in range(0, point_count, read_size):
+            tasks.append((las_path, start, min(read_size, point_count - start), center, in_dtype))
+
     # 子ノードごとにファイルを開く
     fps = {child: child_bins[child].open("wb") for child in range(8)}
     try:
-        # .lasを開いていく / プログレスバー
-        for las_path in tqdm(las_paths, desc="キャッシュを作成", unit="file"):
-            with laspy.open(las_path) as reader:
+        # チャンクの読み込み / 変換 / 振り分けは並列に行い、書き込みは元の順番どおりに行う
+        with utils.process_pool(config.options.worker_count()) as pool:
+            results = utils.ordered_map(pool, _read_las_chunk, tasks)
 
-                # スケール / オフセットを取得（精度維持のため float64）
-                scale = np.array(reader.header.scales, dtype=np.float64)
-                offset = np.array(reader.header.offsets, dtype=np.float64)
+            # プログレスバー
+            for sorted_recs, bounds, chunk_min, chunk_max in tqdm(
+                results, total=len(tasks), desc="キャッシュを作成", unit="chunk"
+            ):
+                # 中心寄せ後の最小値 / 最大値を更新
+                vmin = np.minimum(vmin, chunk_min)
+                vmax = np.maximum(vmax, chunk_max)
 
-                # 指定の点数ごとに読む
-                for pts in reader.chunk_iterator(read_size):
-
-                    # 実座標にしてUnity座標系にする
-                    x, y, z = _to_unity_xyz(pts, scale, offset)
-
-                    # 原点に寄せる（float64で引いてから、小さくなった値をfloat32に落とす）
-                    x = (x - center[0]).astype(np.float32)
-                    y = (y - center[1]).astype(np.float32)
-                    z = (z - center[2]).astype(np.float32)
-
-                    # 中心寄せ後の最小値 / 最大値を更新
-                    chunk_min = np.array([x.min(), y.min(), z.min()], dtype=np.float32)
-                    chunk_max = np.array([x.max(), y.max(), z.max()], dtype=np.float32)
-                    vmin = np.minimum(vmin, chunk_min)
-                    vmax = np.maximum(vmax, chunk_max)
-
-                    # RGBを取得
-                    r = pts["red"].astype(np.uint16, copy=False)
-                    g = pts["green"].astype(np.uint16, copy=False)
-                    b = pts["blue"].astype(np.uint16, copy=False)
-
-                    # 指定dtypeの配列を作成
-                    n = len(pts)
-                    recs = np.empty(n, dtype=in_dtype)
-
-                    # 配列に点データを詰める
-                    recs["x"] = x
-                    recs["y"] = y
-                    recs["z"] = z
-                    recs["r"] = r
-                    recs["g"] = g
-                    recs["b"] = b
-
-                    # 中心寄せ後はルートの中心が原点になるため、分割面は0固定で8分割の行き先を決める
-                    cidx = child_index(x, y, z, 0, 0, 0)
-
-                    # 子ごとに並べ替えて連続領域を書き込み
-                    sorted_recs, bounds = partition_by_child(recs, cidx)
-                    for child in range(8):
-                        s, e = bounds[child], bounds[child + 1]
-                        if e > s:
-                            sorted_recs[s:e].tofile(fps[child])
-                            child_counts[child] += e - s
+                # 子ごとに連続領域を書き込み
+                for child in range(8):
+                    s, e = bounds[child], bounds[child + 1]
+                    if e > s:
+                        sorted_recs[s:e].tofile(fps[child])
+                        child_counts[child] += e - s
     finally:
         # ファイルを閉じる
         for fp in fps.values():
@@ -156,6 +131,48 @@ def export_child_bins(config: Config, center: np.ndarray) -> tuple[np.ndarray, n
     counts = {child: int(child_counts[child]) for child in range(8) if child_counts[child] > 0}
 
     return vmin, vmax, counts
+
+
+def _read_las_chunk(task):
+    """LASの1チャンクを読み、中心寄せ / 中間形式化 / 8分割の並べ替えまで行う（並列処理用）"""
+
+    las_path, start, count, center, in_dtype = task
+    with laspy.open(las_path) as reader:
+
+        # スケール / オフセットを取得（精度維持のため float64）
+        scale = np.array(reader.header.scales, dtype=np.float64)
+        offset = np.array(reader.header.offsets, dtype=np.float64)
+
+        # 指定の位置から読む
+        reader.seek(start)
+        pts = reader.read_points(count)
+
+    # 実座標にしてUnity座標系にする
+    x, y, z = _to_unity_xyz(pts, scale, offset)
+
+    # 原点に寄せる（float64で引いてから、小さくなった値をfloat32に落とす）
+    x = (x - center[0]).astype(np.float32)
+    y = (y - center[1]).astype(np.float32)
+    z = (z - center[2]).astype(np.float32)
+
+    # 中心寄せ後の最小値 / 最大値
+    chunk_min = np.array([x.min(), y.min(), z.min()], dtype=np.float32)
+    chunk_max = np.array([x.max(), y.max(), z.max()], dtype=np.float32)
+
+    # 指定dtypeの配列に点データを詰める
+    recs = np.empty(len(pts), dtype=in_dtype)
+    recs["x"] = x
+    recs["y"] = y
+    recs["z"] = z
+    recs["r"] = pts["red"].astype(np.uint16, copy=False)
+    recs["g"] = pts["green"].astype(np.uint16, copy=False)
+    recs["b"] = pts["blue"].astype(np.uint16, copy=False)
+
+    # 中心寄せ後はルートの中心が原点になるため、分割面は0固定で8分割の行き先を決め、子ごとに並べ替える
+    cidx = child_index(x, y, z, 0, 0, 0)
+    sorted_recs, bounds = partition_by_child(recs, cidx)
+
+    return sorted_recs, bounds, chunk_min, chunk_max
 
 
 def _to_unity_xyz(pts, scale: np.ndarray, offset: np.ndarray):

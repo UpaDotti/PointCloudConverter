@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
 
+from PointCloudConverter import utils
+
 
 @dataclass(frozen=True)
 class Options:
@@ -22,6 +24,16 @@ class Options:
     pattern: str = "*.las"  # 入力ファイルの検索パターン
     read_size: int = 2_000_000  # 1回で読む点数
     max_points_in_memory: int = 20_000_000  # この点数以下のノードはRAM上で一括分割する（1点18byte＋並べ替え用の作業領域）
+
+    # 並列処理
+    max_workers: int | None = None  # 並列処理のプロセス数（None: CPU数と空きメモリから自動 / 1: 並列化しない）
+
+    def worker_count(self) -> int:
+        """並列処理のプロセス数（1プロセスあたり最大で max_points_in_memory 点分の作業領域を使う）"""
+
+        # 1点あたりの作業領域の目安：読み込み / 並べ替え後のコピー / 並べ替え順序 / 量子化後の葉と結果の連結
+        bytes_per_point = 64
+        return utils.decide_workers(self.max_workers, self.max_points_in_memory * bytes_per_point)
 
     # 中間形式
     in_dtype = np.dtype(

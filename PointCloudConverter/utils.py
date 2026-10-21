@@ -1,6 +1,89 @@
+import collections
+import contextlib
 import functools
+import multiprocessing
+import os
 
 import numpy as np
+
+
+def available_memory() -> int | None:
+    """空きメモリ(byte)を取得（取得できなければ None）"""
+
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(MemoryStatusEx)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return None
+            return int(status.ullAvailPhys)
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def decide_workers(max_workers: int | None, bytes_per_worker: int, limit: int = 8) -> int:
+    """
+    並列処理のプロセス数を決める
+    max_workers を指定したらその値（CPU数が上限）、None ならCPU数と空きメモリから自動で決める
+    """
+
+    cpu = os.cpu_count() or 1
+    if max_workers is not None:
+        return max(1, min(max_workers, cpu))
+
+    # CPU数（多すぎてもメインプロセスの書き込みが詰まって速くならないので limit まで）
+    workers = min(cpu, limit)
+
+    # 空きメモリの7割に収まる数まで減らす（残りはメインプロセスや他のアプリ用）
+    memory = available_memory()
+    if memory is not None:
+        workers = min(workers, int(memory * 0.7) // max(1, bytes_per_worker))
+
+    return max(1, workers)
+
+
+@contextlib.contextmanager
+def process_pool(workers: int):
+    """並列処理用のプロセスプールを作る（1プロセス以下なら並列化せず None を返す）"""
+
+    if workers <= 1:
+        yield None
+        return
+    with multiprocessing.get_context("spawn").Pool(workers) as pool:
+        yield pool
+
+
+def ordered_map(pool, func, tasks):
+    """tasksを並列に処理し、結果を元の順番で返す（結果がメモリに溜まりすぎないよう同時実行数を制限）"""
+
+    if pool is None:
+        yield from map(func, tasks)
+        return
+
+    window = pool._processes * 2
+    pending = collections.deque()
+    for task in tasks:
+        pending.append(pool.apply_async(func, (task,)))
+        if len(pending) >= window:
+            yield pending.popleft().get()
+    while pending:
+        yield pending.popleft().get()
 
 
 def convert_color(channel_16: np.ndarray) -> np.ndarray:

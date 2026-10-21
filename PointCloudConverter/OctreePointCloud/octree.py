@@ -1,3 +1,4 @@
+import collections
 from dataclasses import dataclass
 from pathlib import Path
 import json
@@ -42,15 +43,35 @@ class PointStore:
         self.fp.close()
 
 
+class MemoryStore:
+    """PointStoreと同じ使い方でメモリに溜める（並列処理の結果をメインプロセスに返すため）"""
+
+    def __init__(self, dtype: np.dtype):
+        self.dtype = dtype
+        self.parts: list[np.ndarray] = []
+        self.count = 0
+
+    def append(self, pts: np.ndarray) -> int:
+        offset = self.count
+        self.parts.append(pts)
+        self.count += int(pts.shape[0])
+        return offset
+
+    def data(self) -> np.ndarray:
+        if not self.parts:
+            return np.empty(0, dtype=self.dtype)
+        return np.concatenate(self.parts)
+
+
 @dataclass
 class BuildState:
     """オクトツリー構築中の出力先"""
 
     branches: list[dict]
     leaves: list[dict]
-    leaf_store: PointStore
-    branch_store: PointStore
-    pbar: tqdm
+    leaf_store: PointStore | MemoryStore
+    branch_store: PointStore | MemoryStore
+    node_count: int = 0  # 処理したノード数（プログレスバー用）
 
 
 def make_child_key(parent: NodeKey, child: int) -> NodeKey:
@@ -166,12 +187,38 @@ def build_octree_bins(
     leaf_store = PointStore(nodes_dir / LEAVES_FILENAME)
     branch_store = PointStore(nodes_dir / BRANCHES_FILENAME)
 
-    # プログレスバー
-    with tqdm(desc="オクトツリー分割", unit="node") as pbar:
-        state = BuildState(branches, leaves, leaf_store, branch_store, pbar)
+    # 並列処理中の部分木（結果がメモリに溜まりすぎないよう同時実行数を制限）
+    pending: collections.deque = collections.deque()
+
+    def merge(result) -> None:
+        """部分木の結果を葉 / 枝の代表点ファイルに書き込み、オフセットをファイル内の位置に直す"""
+        sub_branches, sub_leaves, leaf_data, branch_data, node_count = result
+        leaf_base = leaf_store.append(leaf_data)
+        branch_base = branch_store.append(branch_data)
+        for leaf in sub_leaves:
+            leaf["offset"] += leaf_base
+            if "sample" in leaf:
+                leaf["sample"]["offset"] += branch_base
+        for branch in sub_branches:
+            branch["lod"]["offset"] += branch_base
+        branches.extend(sub_branches)
+        leaves.extend(sub_leaves)
+        pbar.update(node_count)
+
+    # プログレスバー / 並列処理用のプロセスプール
+    with tqdm(desc="オクトツリー分割", unit="node") as pbar, utils.process_pool(
+        config.options.worker_count()
+    ) as pool:
+        window = pool._processes * 2 if pool else 0
 
         # キューがある間はループ
-        while queue:
+        while queue or pending:
+
+            # 終わった部分木の結果を取り込む（キューが空なら終わるまで待つ）
+            while pending and (not queue or pending[0].ready() or len(pending) >= window):
+                merge(pending.popleft().get())
+            if not queue:
+                continue
 
             # キューを一個取り出す
             key, work = queue.popitem()
@@ -183,16 +230,13 @@ def build_octree_bins(
             # 分割するかの判定（深さが上限未満 + 点数が指定を超える）
             should_split = key.depth < max_depth and count > max_points_per_leaf
 
-            # メモリに載る点数なら一度だけ読み込み、部分木をメモリ上で分割して葉と枝の代表点を書き出す
+            # メモリに載る点数なら部分木をまとめてメモリ上で分割する（部分木ごとに並列処理）
             if count <= max_points_in_memory:
-                pts = np.fromfile(bin_path, dtype=in_dtype)
-                bin_path.unlink(missing_ok=True)
-                summary = build_subtree_in_memory(config, key, pts, vmin, vmax, state)
-                del pts
-
-                # 部分木の根が葉なら、親（ファイル上で分割した枝）の代表点用に間引いた点を残す
-                if not should_split:
-                    leaves[-1]["sample"] = write_leaf_sample(config, summary, branch_store)
+                task = (config, key, bin_path, vmin, vmax)
+                if pool:
+                    pending.append(pool.apply_async(build_subtree_task, (task,)))
+                else:
+                    merge(build_subtree_task(task))
 
             # 分割しない場合は葉ノードにする（メモリに載らない葉はチャンクごとに処理）
             elif not should_split:
@@ -244,6 +288,34 @@ def build_octree_bins(
     return branches_sorted, leaves_sorted
 
 
+def build_subtree_task(task):
+    """
+    1つの部分木をメモリ上で分割する（並列処理用）
+    葉 / 枝の代表点は書き出さずに返し、メインプロセスがまとめて書き込む（オフセットは部分木内の位置）
+    """
+
+    config, key, bin_path, vmin, vmax = task
+    max_depth = config.options.max_depth
+    max_points_per_leaf = config.options.max_points_per_leaf
+
+    # 一度だけ読み込む
+    pts = np.fromfile(bin_path, dtype=config.options.in_dtype)
+    bin_path.unlink(missing_ok=True)
+    count = int(pts.shape[0])
+
+    # 部分木を分割
+    leaf_store = MemoryStore(config.options.out_dtype)
+    branch_store = MemoryStore(config.options.in_dtype)
+    state = BuildState([], [], leaf_store, branch_store)
+    summary = build_subtree_in_memory(config, key, pts, vmin, vmax, state)
+
+    # 部分木の根が葉なら、親（ファイル上で分割した枝）の代表点用に間引いた点を残す
+    if not (key.depth < max_depth and count > max_points_per_leaf):
+        state.leaves[-1]["sample"] = write_leaf_sample(config, summary, branch_store)
+
+    return state.branches, state.leaves, leaf_store.data(), branch_store.data(), state.node_count
+
+
 def build_subtree_in_memory(
     config: Config,
     key: NodeKey,
@@ -268,7 +340,7 @@ def build_subtree_in_memory(
         tight_min, tight_max = array_bounds(pts)
         offset = state.leaf_store.append(utils.quantize_points(pts, tight_min, tight_max, out_dtype))
         state.leaves.append(leaf_record(key, vmin, vmax, count, offset, tight_min, tight_max))
-        state.pbar.update(1)
+        state.node_count += 1
         return pts
 
     # 子ごとに連続するよう並べ替える
@@ -282,7 +354,7 @@ def build_subtree_in_memory(
     child_flags = [bool(bounds[child + 1] > bounds[child]) for child in range(8)]
     record = branch_record(key, vmin, vmax, count, child_flags)
     state.branches.append(record)
-    state.pbar.update(1)
+    state.node_count += 1
 
     # 点がある子だけ再帰し、子から代表点を集める（ボトムアップ）
     max_per_child = max(1, config.options.max_points_per_branch // 8)
