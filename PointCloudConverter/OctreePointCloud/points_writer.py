@@ -36,6 +36,9 @@ def compute_points_center(config: Config) -> np.ndarray:
     # LASヘッダーに記録された範囲を使う（全点を読まずに済む）
     for las_path in las_paths:
         with laspy.open(las_path) as reader:
+            # 点が0のLASはヘッダーの範囲が不正な値のことがあるため除外
+            if reader.header.point_count == 0:
+                continue
             header_min = np.array(reader.header.mins, dtype=np.float64)
             header_max = np.array(reader.header.maxs, dtype=np.float64)
 
