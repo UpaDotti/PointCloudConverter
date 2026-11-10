@@ -25,6 +25,19 @@ python -m PointCloudConverter.OctreePointCloud.convert_opc <LASのフォルダ> 
 - 中間ファイルを書くため、出力フォルダには入力の点群と同じくらいの空き容量が必要です
 - 出力フォルダ内の `nodes` フォルダは中間ファイル用として最後に丸ごと削除します。出力フォルダには空のフォルダか専用のフォルダを指定してください
 
+### 入力できる LAS
+
+- 色（RGB）を持つ LAS が必要です。色の無い LAS（点フォーマット 0 / 1 / 4 など）を渡すと `no field of name red` のエラーで止まります
+- 圧縮形式の `.laz` は読み込み対象外です（検索するのは `*.las` だけです）
+
+### Git Bash でヘルプが文字化けするとき
+
+Git Bash では Python の出力が Shift_JIS になり、日本語が文字化けすることがあります。`PYTHONUTF8=1` を付けて実行してください。PowerShell ではそのまま表示されます。
+
+```bash
+PYTHONUTF8=1 python -m PointCloudConverter.OctreePointCloud.convert_opc --help
+```
+
 ## 変換の流れ
 
 1. 点群を8分割のキャッシュへ振り分ける
