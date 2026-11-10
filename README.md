@@ -9,7 +9,7 @@
 - `numpy`、`laspy`、`tqdm`
 
 ```bash
-pip install numpy laspy tqdm
+pip install -r requirements.txt
 ```
 
 ## 使い方
@@ -20,7 +20,7 @@ pip install numpy laspy tqdm
 python -m PointCloudConverter.OctreePointCloud.convert_opc <LASのフォルダ> <出力フォルダ>
 ```
 
-- 入力フォルダ直下の `*.las` をすべて読み込み、1つの点群として変換します
+- 入力フォルダの中の `*.las` を、サブフォルダも含めてすべて読み込み、1つの点群として変換します
 - 出力フォルダに `sample.opc` を書き出します。途中で作る中間ファイルは最後に削除します
 - 中間ファイルを書くため、出力フォルダには入力の点群と同じくらいの空き容量が必要です
 
