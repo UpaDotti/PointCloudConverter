@@ -1,2 +1,17 @@
+# Python のキャッシュ
 __pycache__/
 *.pyc
+
+# 仮想環境
+.venv/
+venv/
+
+# 点群データ（入力と出力）
+*.las
+*.laz
+*.opc
+
+# エディタとツールの設定
+.vscode/
+.idea/
+.claude/
