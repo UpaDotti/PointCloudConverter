@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 from .config import Paths, Options, Config
@@ -7,6 +8,14 @@ from .leaf_lods import build_leaf_lods
 from .branch_lods import build_branch_lods
 from .opc_writer import write_opc
 from .cleanup import cleanup_intermediate_files
+
+
+def parse_args() -> argparse.Namespace:
+    """コマンドライン引数（入力フォルダと出力フォルダ）を読む"""
+    parser = argparse.ArgumentParser(description=".las（フォルダ）から.opcを出力する")
+    parser.add_argument("las_dir", type=Path, help="入力の.lasファイルがあるフォルダ")
+    parser.add_argument("out_dir", type=Path, help="sample.opcと中間ファイルを書き出すフォルダ")
+    return parser.parse_args()
 
 
 def main() -> None:
@@ -21,10 +30,14 @@ def main() -> None:
     5. OPC書き出し（葉binは葉の書き出し後に削除）
     6. キャッシュファイル削除
     """
-    LAS_DIR = Path(r"C:\Users\user\Desktop\点群")
-    OUT_DIR = Path(r"C:\Users\user\Desktop")
+    args = parse_args()
 
-    paths = Paths(las_dir=LAS_DIR, out_dir=OUT_DIR)
+    # 入力フォルダが無ければ変換を始めずに終える
+    if not args.las_dir.is_dir():
+        raise SystemExit(f"入力フォルダが見つかりません: {args.las_dir}")
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    paths = Paths(las_dir=args.las_dir, out_dir=args.out_dir)
     options = Options()
     config = Config(paths=paths, options=options)
 
